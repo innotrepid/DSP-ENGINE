@@ -10,11 +10,36 @@
 #include <new>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <stdlib.h>
+#endif
+
 #ifdef DSP_USE_DOUBLE
 using Sample = double;
 #else
 using Sample = float;
 #endif
+
+static void* dsp_aligned_alloc(size_t alignment, size_t size)
+{
+#if defined(_WIN32)
+    return _aligned_malloc(size, alignment);
+#else
+    void* p = nullptr;
+    if (posix_memalign(&p, alignment, size) != 0)
+        return nullptr;
+    return p;
+#endif
+}
+
+static void dsp_aligned_free(void* p)
+{
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
 
 struct DspEngine {
     DspConfig           config;
@@ -61,11 +86,11 @@ DSP_API DspEngine* dsp_create(const DspConfig* config)
     eng->config = *config;
 
     const size_t cap = static_cast<size_t>(config->buffer_frames) * 4;
-    eng->temp_l = static_cast<Sample*>(std::aligned_alloc(64, cap * sizeof(Sample)));
-    eng->temp_r = static_cast<Sample*>(std::aligned_alloc(64, cap * sizeof(Sample)));
+    eng->temp_l = static_cast<Sample*>(dsp_aligned_alloc(64, cap * sizeof(Sample)));
+    eng->temp_r = static_cast<Sample*>(dsp_aligned_alloc(64, cap * sizeof(Sample)));
     if (!eng->temp_l || !eng->temp_r) {
-        std::free(eng->temp_l);
-        std::free(eng->temp_r);
+        dsp_aligned_free(eng->temp_l);
+        dsp_aligned_free(eng->temp_r);
         delete eng;
         set_error("Failed to allocate aligned buffers");
         return nullptr;
@@ -79,8 +104,8 @@ DSP_API void dsp_destroy(DspEngine* engine)
 {
     if (!engine) return;
     dsp_stop(engine);
-    std::free(engine->temp_l);
-    std::free(engine->temp_r);
+    dsp_aligned_free(engine->temp_l);
+    dsp_aligned_free(engine->temp_r);
     delete engine;
 }
 
