@@ -1,0 +1,48 @@
+name: dsp_engine
+description: >
+  Flutter FFI bindings for DSP ENGINE — 64-bit audio processing with
+  Direct Volume Control (DVC). Designed for integration with Resonate
+  (com.aetherion.resonate). This package is a library, not a standalone app.
+version: 0.1.0
+homepage: https://github.com/innotrepid/DSP-ENGINE
+repository: https://github.com/innotrepid/DSP-ENGINE
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+  plugin_platform_interface: ^2.1.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  ffigen: ^12.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+      ios:
+        ffiPlugin: true
+      linux:
+        ffiPlugin: true
+      macos:
+        ffiPlugin: true
+      windows:
+        ffiPlugin: true
+
+ffigen:
+  name: DspEngineBindings
+  description: Auto-generated bindings for DSP ENGINE C ABI
+  output: 'lib/src/dsp_engine_bindings.g.dart'
+  headers:
+    entry-points:
+      - '../../../include/dsp_engine.h'
+  compiler-opts:
+    - '-I../../../include'
