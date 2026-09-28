@@ -8,21 +8,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }} / ${{ matrix.build_type }})
-    runs-on: ${{ matrix.os }}
+  # Primary target for now: native library used by Flutter Android (Resonate)
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Release, Debug]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure (Unix)
-        if: runner.os != 'Windows'
+      - name: Configure
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
@@ -30,76 +27,90 @@ jobs:
             -DDSP_BUILD_TESTS=OFF \
             -DDSP_ENABLE_SIMD=OFF
 
-      - name: Configure (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cmake -B build \
-            -G "Visual Studio 17 2022" -A x64 \
-            -DDSP_BUILD_EXAMPLES=ON \
-            -DDSP_BUILD_TESTS=OFF \
-            -DDSP_ENABLE_SIMD=OFF
+      - name: Build
+        run: cmake --build build --parallel
 
-      - name: Build (Unix)
-        if: runner.os != 'Windows'
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel
-
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel
-
-      - name: Run offline example (Unix)
-        if: runner.os != 'Windows'
+      - name: Run offline example
         run: |
           set -e
-          if [ -x ./build/examples/dsp_example_offline ]; then
-            ./build/examples/dsp_example_offline
-          elif [ -x ./build/dsp_example_offline ]; then
-            ./build/dsp_example_offline
-          else
-            find build -name 'dsp_example_offline' -type f -executable -print -exec {} \;
-          fi
+          bin=$(find build -name dsp_example_offline -type f -executable | head -1)
+          test -n "$bin"
+          "$bin"
 
-      - name: Run offline example (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+  # Cross-compile arm64 + armv7 shared libs for Android (NDK)
+  build-android:
+    name: Build (Android NDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Build arm64-v8a
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          $candidates = @(
-            "build\examples\${{ matrix.build_type }}\dsp_example_offline.exe",
-            "build\${{ matrix.build_type }}\examples\dsp_example_offline.exe",
-            "build\${{ matrix.build_type }}\dsp_example_offline.exe",
-            "build\examples\dsp_example_offline.exe"
-          )
-          $found = $false
-          foreach ($p in $candidates) {
-            if (Test-Path $p) {
-              Write-Host "Running $p"
-              & $p
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              $found = $true
-              break
-            }
-          }
-          if (-not $found) {
-            Get-ChildItem -Path build -Recurse -Filter dsp_example_offline.exe | ForEach-Object {
-              Write-Host "Running $($_.FullName)"
-              & $_.FullName
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              $found = $true
-            }
-          }
-          if (-not $found) { throw "dsp_example_offline.exe not found" }
+          set -e
+          ABI=arm64-v8a
+          cmake -B build-android-$ABI \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=$ABI \
+            -DANDROID_PLATFORM=android-24 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDSP_BUILD_EXAMPLES=OFF \
+            -DDSP_BUILD_TESTS=OFF \
+            -DDSP_ENABLE_SIMD=OFF \
+            -DDSP_BUILD_SHARED=ON
+          cmake --build build-android-$ABI --parallel
+          mkdir -p dist/android/$ABI
+          find build-android-$ABI -name 'libdsp_engine.so' -exec cp {} dist/android/$ABI/ \;
+          test -f dist/android/$ABI/libdsp_engine.so
+          echo "Built dist/android/$ABI/libdsp_engine.so"
+          ls -la dist/android/$ABI/
+
+      - name: Build armeabi-v7a
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          ABI=armeabi-v7a
+          cmake -B build-android-$ABI \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=$ABI \
+            -DANDROID_PLATFORM=android-24 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDSP_BUILD_EXAMPLES=OFF \
+            -DDSP_BUILD_TESTS=OFF \
+            -DDSP_ENABLE_SIMD=OFF \
+            -DDSP_BUILD_SHARED=ON
+          cmake --build build-android-$ABI --parallel
+          mkdir -p dist/android/$ABI
+          find build-android-$ABI -name 'libdsp_engine.so' -exec cp {} dist/android/$ABI/ \;
+          test -f dist/android/$ABI/libdsp_engine.so
+          ls -la dist/android/$ABI/
+
+      - name: Upload Android .so artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libdsp_engine-android
+          path: dist/android/
 
   analyze:
     name: Static analysis
     runs-on: ubuntu-latest
-    needs: build
-    if: always() && (github.event_name == 'push' || github.event_name == 'pull_request')
+    needs: build-linux
+    if: always()
     steps:
       - uses: actions/checkout@v4
-
       - name: Install clang-tidy
         run: sudo apt-get update && sudo apt-get install -y clang-tidy
-
       - name: Configure
         run: |
           cmake -B build \
@@ -107,8 +118,6 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DDSP_BUILD_EXAMPLES=OFF \
             -DDSP_ENABLE_SIMD=OFF
-
-      - name: Run clang-tidy (non-blocking)
+      - name: clang-tidy (non-blocking)
         continue-on-error: true
-        run: |
-          find src -name '*.cpp' | xargs -r clang-tidy -p build --quiet || true
+        run: find src -name '*.cpp' | xargs -r clang-tidy -p build --quiet || true
