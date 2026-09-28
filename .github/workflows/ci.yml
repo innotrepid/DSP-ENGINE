@@ -16,63 +16,97 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Release, Debug]
-        include:
-          - os: ubuntu-latest
-            cmake_extra: "-DDSP_ENABLE_SIMD=ON"
-          - os: windows-latest
-            cmake_extra: "-DDSP_ENABLE_SIMD=ON"
-          - os: macos-latest
-            cmake_extra: "-DDSP_ENABLE_SIMD=ON"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.28.x'
-
-      - name: Configure
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DDSP_BUILD_EXAMPLES=ON \
             -DDSP_BUILD_TESTS=OFF \
-            ${{ matrix.cmake_extra }}
+            -DDSP_ENABLE_SIMD=OFF
 
-      - name: Build
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B build \
+            -G "Visual Studio 17 2022" -A x64 \
+            -DDSP_BUILD_EXAMPLES=ON \
+            -DDSP_BUILD_TESTS=OFF \
+            -DDSP_ENABLE_SIMD=OFF
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
 
-      - name: Run offline example
-        shell: bash
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Run offline example (Unix)
+        if: runner.os != 'Windows'
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            ./build/${{ matrix.build_type }}/examples/dsp_example_offline.exe || \
-            ./build/examples/${{ matrix.build_type }}/dsp_example_offline.exe || \
-            ./build/examples/dsp_example_offline.exe
-          else
+          set -e
+          if [ -x ./build/examples/dsp_example_offline ]; then
             ./build/examples/dsp_example_offline
+          elif [ -x ./build/dsp_example_offline ]; then
+            ./build/dsp_example_offline
+          else
+            find build -name 'dsp_example_offline' -type f -executable -print -exec {} \;
           fi
 
-  # Optional: static analysis (Linux only)
+      - name: Run offline example (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "build\examples\${{ matrix.build_type }}\dsp_example_offline.exe",
+            "build\${{ matrix.build_type }}\examples\dsp_example_offline.exe",
+            "build\${{ matrix.build_type }}\dsp_example_offline.exe",
+            "build\examples\dsp_example_offline.exe"
+          )
+          $found = $false
+          foreach ($p in $candidates) {
+            if (Test-Path $p) {
+              Write-Host "Running $p"
+              & $p
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              $found = $true
+              break
+            }
+          }
+          if (-not $found) {
+            Get-ChildItem -Path build -Recurse -Filter dsp_example_offline.exe | ForEach-Object {
+              Write-Host "Running $($_.FullName)"
+              & $_.FullName
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              $found = $true
+            }
+          }
+          if (-not $found) { throw "dsp_example_offline.exe not found" }
+
   analyze:
     name: Static analysis
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    if: always() && (github.event_name == 'push' || github.event_name == 'pull_request')
     steps:
       - uses: actions/checkout@v4
 
       - name: Install clang-tidy
         run: sudo apt-get update && sudo apt-get install -y clang-tidy
 
-      - name: Configure with compile_commands
+      - name: Configure
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DDSP_BUILD_EXAMPLES=OFF
+            -DDSP_BUILD_EXAMPLES=OFF \
+            -DDSP_ENABLE_SIMD=OFF
 
       - name: Run clang-tidy (non-blocking)
         continue-on-error: true
