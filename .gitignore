@@ -1,0 +1,23 @@
+# Build
+build/
+cmake-build-*/
+out/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.user
+*.suo
+compile_commands.json
+
+# Misc
+.DS_Store
+*.log
+*.tmp
