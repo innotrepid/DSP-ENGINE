@@ -5,6 +5,7 @@
 
 #if defined(DSP_HAS_COREAUDIO) && (defined(__APPLE__) || defined(__MACH__))
 
+#include <TargetConditionals.h>
 #include <AudioToolbox/AudioToolbox.h>
 #include <AudioUnit/AudioUnit.h>
 #include <CoreAudio/CoreAudioTypes.h>
