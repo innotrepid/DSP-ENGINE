@@ -1,211 +1,141 @@
 import 'dart:ffi';
 import 'dart:typed_data';
-
 import 'package:ffi/ffi.dart';
 
+import 'dsp_engine_bindings.dart';
 import 'dsp_config.dart';
-import 'dsp_engine_bindings.dart' as native;
 import 'dsp_exception.dart';
 
-/// High-level handle to a DSP ENGINE instance (DVC + multi-band EQ).
+/// High-level Dart wrapper around the native DSP ENGINE.
 class DspEngine {
-  Pointer<Void> _handle;
-  bool _disposed = false;
+  final Pointer<Void> _handle;
+  final DspEngineBindings _b;
 
-  DspEngine._(this._handle);
+  DspEngine._(this._handle, this._b);
 
-  factory DspEngine.create([DspConfig config = const DspConfig()]) {
-    final cfg = calloc<native.DspConfigNative>();
-    try {
-      cfg.ref
-        ..sample_rate = config.sampleRate
-        ..channels = config.channels
-        ..buffer_frames = config.bufferFrames
-        ..exclusive_mode = config.exclusiveMode
-        ..bit_perfect = config.bitPerfect
-        ..realtime_priority = config.realtimePriority;
-      final handle = native.DspEngineNative.dsp_create(cfg);
-      if (handle == nullptr) {
-        final errPtr = native.DspEngineNative.dsp_last_error();
-        final err = errPtr == nullptr ? '' : errPtr.toDartString();
-        throw DspException(err.isEmpty ? 'dsp_create failed' : err);
-      }
-      return DspEngine._(handle);
-    } finally {
-      calloc.free(cfg);
+  /// Create a new engine instance.
+  static DspEngine create({
+    double sampleRate = 48000,
+    int channels = 2,
+    int maxBlock = 1024,
+    bool enableEq = true,
+    bool enableDvc = true,
+    bool enableLimiter = false,
+    bool enableDither = false,
+    DitherMode ditherMode = DitherMode.tpdf,
+    double limiterThresholdDb = -1.0,
+    double limiterReleaseMs = 50.0,
+  }) {
+    final b = DspEngineBindings();
+    final cfg = calloc<DspConfigNative>();
+    cfg.ref.sampleRate = sampleRate;
+    cfg.ref.channels = channels;
+    cfg.ref.maxBlock = maxBlock;
+    cfg.ref.enableEq = enableEq ? 1 : 0;
+    cfg.ref.enableDvc = enableDvc ? 1 : 0;
+    cfg.ref.enableLimiter = enableLimiter ? 1 : 0;
+    cfg.ref.enableDither = enableDither ? 1 : 0;
+    cfg.ref.ditherMode = ditherMode.index;
+    cfg.ref.limiterThresholdDb = limiterThresholdDb;
+    cfg.ref.limiterReleaseMs = limiterReleaseMs;
+
+    final h = b.dsp_create(cfg);
+    calloc.free(cfg);
+    if (h == nullptr) {
+      throw DspException('dsp_create failed');
     }
-  }
-
-  void _ensureAlive() {
-    if (_disposed || _handle == nullptr) {
-      throw const DspException('DspEngine already disposed');
-    }
+    return DspEngine._(h, b);
   }
 
   static String get version {
-    try {
-      final p = native.DspEngineNative.dsp_version();
-      if (p == nullptr) return 'unknown';
-      return p.toDartString();
-    } catch (_) {
-      return 'unknown';
-    }
-  }
-
-  int get sampleRate {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_get_sample_rate(_handle);
-  }
-
-  int get channels {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_get_channels(_handle);
-  }
-
-  int get bufferFrames {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_get_buffer_frames(_handle);
-  }
-
-  bool get isRunning {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_is_running(_handle);
-  }
-
-  int get processedFrames {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_get_processed_frames(_handle);
-  }
-
-  int get xrunCount {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_get_xrun_count(_handle);
-  }
-
-  double get volume {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_get_volume(_handle);
-  }
-
-  void setVolume(double linearGain) {
-    _ensureAlive();
-    native.DspEngineNative.dsp_set_volume(_handle, linearGain);
-  }
-
-  void setVolumeDb(double db) {
-    _ensureAlive();
-    native.DspEngineNative.dsp_set_volume_db(_handle, db);
-  }
-
-  void setVolumeRamped(double linearGain, {double rampMs = 20.0}) {
-    _ensureAlive();
-    native.DspEngineNative.dsp_set_volume_ramped(_handle, linearGain, rampMs);
-  }
-
-  // ---- Multi-band EQ ----
-
-  bool get eqEnabled {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_eq_is_enabled(_handle);
-  }
-
-  set eqEnabled(bool value) {
-    _ensureAlive();
-    native.DspEngineNative.dsp_eq_set_enabled(_handle, value);
-  }
-
-  int get eqBandCount {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_eq_band_count(_handle);
-  }
-
-  void setEqBand(int index,
-      {required double freqHz, required double gainDb, double q = 0}) {
-    _ensureAlive();
-    native.DspEngineNative.dsp_eq_set_band(_handle, index, freqHz, gainDb, q);
-  }
-
-  /// Push studio curve into native EQ. [centersHz] optional (null keeps defaults).
-  void setEqBands({List<double>? centersHz, required List<double> gainsDb}) {
-    _ensureAlive();
-    final n = gainsDb.length;
-    final gPtr = calloc<Double>(n);
-    Pointer<Double> cPtr = nullptr;
-    try {
-      for (var i = 0; i < n; i++) {
-        gPtr[i] = gainsDb[i];
-      }
-      if (centersHz != null && centersHz.length >= n) {
-        cPtr = calloc<Double>(n);
-        for (var i = 0; i < n; i++) {
-          cPtr[i] = centersHz[i];
-        }
-      }
-      native.DspEngineNative.dsp_eq_set_bands(_handle, cPtr, gPtr, n);
-    } finally {
-      calloc.free(gPtr);
-      if (cPtr != nullptr) calloc.free(cPtr);
-    }
-  }
-
-  void resetEq() {
-    _ensureAlive();
-    native.DspEngineNative.dsp_eq_reset(_handle);
-  }
-
-  bool setRealtimePriority([int priority = 1]) {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_set_realtime_priority(_handle, priority);
-  }
-
-  int start() {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_start(_handle);
-  }
-
-  int stop() {
-    _ensureAlive();
-    return native.DspEngineNative.dsp_stop(_handle);
-  }
-
-  void process(Float32List input, Float32List output, int frames) {
-    _ensureAlive();
-    if (frames <= 0) return;
-    final ch = channels;
-    final needed = frames * ch;
-    if (input.length < needed || output.length < needed) {
-      throw DspException(
-        'Buffer too small: need $needed samples, '
-        'got in=${input.length} out=${output.length}',
-      );
-    }
-    final inPtr = calloc<Float>(needed);
-    final outPtr = calloc<Float>(needed);
-    try {
-      for (var i = 0; i < needed; i++) {
-        inPtr[i] = input[i];
-      }
-      native.DspEngineNative.dsp_process(_handle, inPtr, outPtr, frames);
-      for (var i = 0; i < needed; i++) {
-        output[i] = outPtr[i];
-      }
-    } finally {
-      calloc.free(inPtr);
-      calloc.free(outPtr);
-    }
-  }
-
-  void processPointers(Pointer<Float> input, Pointer<Float> output, int frames) {
-    _ensureAlive();
-    native.DspEngineNative.dsp_process(_handle, input, output, frames);
+    final b = DspEngineBindings();
+    final p = b.dsp_version();
+    return p.toDartString();
   }
 
   void dispose() {
-    if (_disposed) return;
-    _disposed = true;
-    if (_handle != nullptr) {
-      native.DspEngineNative.dsp_destroy(_handle);
-      _handle = nullptr;
-    }
+    _b.dsp_destroy(_handle);
   }
+
+  void reset() => _check(_b.dsp_reset(_handle));
+
+  void setSampleRate(double rate) =>
+      _check(_b.dsp_set_sample_rate(_handle, rate));
+
+  void setChannels(int ch) => _check(_b.dsp_set_channels(_handle, ch));
+
+  /// Process interleaved float32 samples.
+  void process(Float32List input, Float32List output) {
+    if (input.length != output.length) {
+      throw ArgumentError('input/output length mismatch');
+    }
+    final frames = input.length ~/ 2; // assume stereo for simplicity; real code uses channels
+    final inPtr = calloc<Float>(input.length);
+    final outPtr = calloc<Float>(output.length);
+    for (var i = 0; i < input.length; i++) inPtr[i] = input[i];
+    _check(_b.dsp_process(_handle, inPtr, outPtr, frames));
+    for (var i = 0; i < output.length; i++) output[i] = outPtr[i];
+    calloc.free(inPtr);
+    calloc.free(outPtr);
+  }
+
+  void setEqEnabled(bool enable) =>
+      _check(_b.dsp_eq_enable(_handle, enable ? 1 : 0));
+
+  void setEqBands(List<EqBand> bands) {
+    if (bands.isEmpty) {
+      _check(_b.dsp_eq_set_bands(_handle, nullptr, 0));
+      return;
+    }
+    final ptr = calloc<DspEqBandNative>(bands.length);
+    for (var i = 0; i < bands.length; i++) {
+      ptr[i].freqHz = bands[i].freqHz;
+      ptr[i].gainDb = bands[i].gainDb;
+      ptr[i].q = bands[i].q;
+      ptr[i].type = bands[i].type.index;
+    }
+    _check(_b.dsp_eq_set_bands(_handle, ptr, bands.length));
+    calloc.free(ptr);
+  }
+
+  void setDvcGainDb(double db) =>
+      _check(_b.dsp_dvc_set_gain_db(_handle, db));
+
+  double get dvcGainDb => _b.dsp_dvc_get_gain_db(_handle);
+
+  void setLimiterEnabled(bool enable) =>
+      _check(_b.dsp_limiter_enable(_handle, enable ? 1 : 0));
+
+  void setLimiterThreshold(double db) =>
+      _check(_b.dsp_limiter_set_threshold(_handle, db));
+
+  void setLimiterRelease(double ms) =>
+      _check(_b.dsp_limiter_set_release(_handle, ms));
+
+  void setDitherEnabled(bool enable) =>
+      _check(_b.dsp_dither_enable(_handle, enable ? 1 : 0));
+
+  void setDitherMode(DitherMode mode) =>
+      _check(_b.dsp_dither_set_mode(_handle, mode.index));
+
+  void _check(int code) {
+    if (code != 0) throw DspException('DSP error $code');
+  }
+}
+
+enum DitherMode { none, tpdf, shaped }
+
+enum EqType { peak, lowShelf, highShelf, lowPass, highPass }
+
+class EqBand {
+  final double freqHz;
+  final double gainDb;
+  final double q;
+  final EqType type;
+  const EqBand({
+    required this.freqHz,
+    required this.gainDb,
+    this.q = 1.0,
+    this.type = EqType.peak,
+  });
 }

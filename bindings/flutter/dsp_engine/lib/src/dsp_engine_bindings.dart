@@ -1,96 +1,125 @@
-// ignore_for_file: non_constant_identifier_names, camel_case_types
-
 import 'dart:ffi';
-import 'dart:io';
+import 'package:ffi/ffi.dart';
 
-import 'package:ffi/ffi.dart' show Utf8;
-
-/// Low-level FFI bindings matching `include/dsp_engine.h`.
-class DspEngineNative {
-  DspEngineNative._();
-
-  static DynamicLibrary? _lib;
-
-  static DynamicLibrary get lib => _lib ??= _open();
-
-  static DynamicLibrary _open() {
-    if (Platform.isAndroid) return DynamicLibrary.open('libdsp_engine.so');
-    if (Platform.isIOS || Platform.isMacOS) return DynamicLibrary.process();
-    if (Platform.isLinux) return DynamicLibrary.open('libdsp_engine.so');
-    if (Platform.isWindows) return DynamicLibrary.open('dsp_engine.dll');
-    throw UnsupportedError('Unsupported platform for DSP ENGINE');
-  }
-
-  static final dsp_create = lib.lookupFunction<
-      Pointer<Void> Function(Pointer<DspConfigNative>),
-      Pointer<Void> Function(Pointer<DspConfigNative>)>('dsp_create');
-  static final dsp_destroy = lib.lookupFunction<
-      Void Function(Pointer<Void>), void Function(Pointer<Void>)>('dsp_destroy');
-  static final dsp_start = lib.lookupFunction<
-      Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_start');
-  static final dsp_stop = lib.lookupFunction<
-      Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_stop');
-  static final dsp_process = lib.lookupFunction<
-      Void Function(Pointer<Void>, Pointer<Float>, Pointer<Float>, Int32),
-      void Function(Pointer<Void>, Pointer<Float>, Pointer<Float>, int)>('dsp_process');
-  static final dsp_set_volume = lib.lookupFunction<
-      Void Function(Pointer<Void>, Double), void Function(Pointer<Void>, double)>('dsp_set_volume');
-  static final dsp_get_volume = lib.lookupFunction<
-      Double Function(Pointer<Void>), double Function(Pointer<Void>)>('dsp_get_volume');
-  static final dsp_set_volume_db = lib.lookupFunction<
-      Void Function(Pointer<Void>, Double), void Function(Pointer<Void>, double)>('dsp_set_volume_db');
-  static final dsp_set_volume_ramped = lib.lookupFunction<
-      Void Function(Pointer<Void>, Double, Double),
-      void Function(Pointer<Void>, double, double)>('dsp_set_volume_ramped');
-  static final dsp_set_realtime_priority = lib.lookupFunction<
-      Bool Function(Pointer<Void>, Int32), bool Function(Pointer<Void>, int)>('dsp_set_realtime_priority');
-  static final dsp_is_running = lib.lookupFunction<
-      Bool Function(Pointer<Void>), bool Function(Pointer<Void>)>('dsp_is_running');
-  static final dsp_get_sample_rate = lib.lookupFunction<
-      Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_get_sample_rate');
-  static final dsp_get_channels = lib.lookupFunction<
-      Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_get_channels');
-  static final dsp_get_buffer_frames = lib.lookupFunction<
-      Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_get_buffer_frames');
-  static final dsp_get_processed_frames = lib.lookupFunction<
-      Uint64 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_get_processed_frames');
-  static final dsp_get_xrun_count = lib.lookupFunction<
-      Uint32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_get_xrun_count');
-  static final dsp_last_error = lib.lookupFunction<
-      Pointer<Utf8> Function(), Pointer<Utf8> Function()>('dsp_last_error');
-  static final dsp_version = lib.lookupFunction<
-      Pointer<Utf8> Function(), Pointer<Utf8> Function()>('dsp_version');
-
-  static final dsp_eq_set_enabled = lib.lookupFunction<
-      Void Function(Pointer<Void>, Bool), void Function(Pointer<Void>, bool)>('dsp_eq_set_enabled');
-  static final dsp_eq_is_enabled = lib.lookupFunction<
-      Bool Function(Pointer<Void>), bool Function(Pointer<Void>)>('dsp_eq_is_enabled');
-  static final dsp_eq_band_count = lib.lookupFunction<
-      Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_eq_band_count');
-  static final dsp_eq_set_band = lib.lookupFunction<
-      Void Function(Pointer<Void>, Int32, Double, Double, Double),
-      void Function(Pointer<Void>, int, double, double, double)>('dsp_eq_set_band');
-  static final dsp_eq_set_bands = lib.lookupFunction<
-      Void Function(Pointer<Void>, Pointer<Double>, Pointer<Double>, Int32),
-      void Function(Pointer<Void>, Pointer<Double>, Pointer<Double>, int)>('dsp_eq_set_bands');
-  static final dsp_eq_get_band = lib.lookupFunction<
-      Void Function(Pointer<Void>, Int32, Pointer<Double>, Pointer<Double>, Pointer<Double>),
-      void Function(Pointer<Void>, int, Pointer<Double>, Pointer<Double>, Pointer<Double>)>('dsp_eq_get_band');
-  static final dsp_eq_reset = lib.lookupFunction<
-      Void Function(Pointer<Void>), void Function(Pointer<Void>)>('dsp_eq_reset');
-}
-
+// Native struct mirrors (must match include/dsp_engine.h)
 final class DspConfigNative extends Struct {
-  @Int32()
-  external int sample_rate;
+  @Float()
+  external double sampleRate;
   @Int32()
   external int channels;
   @Int32()
-  external int buffer_frames;
-  @Bool()
-  external bool exclusive_mode;
-  @Bool()
-  external bool bit_perfect;
+  external int maxBlock;
   @Int32()
-  external int realtime_priority;
+  external int enableEq;
+  @Int32()
+  external int enableDvc;
+  @Int32()
+  external int enableLimiter;
+  @Int32()
+  external int enableDither;
+  @Int32()
+  external int ditherMode;
+  @Float()
+  external double limiterThresholdDb;
+  @Float()
+  external double limiterReleaseMs;
+}
+
+final class DspEqBandNative extends Struct {
+  @Float()
+  external double freqHz;
+  @Float()
+  external double gainDb;
+  @Float()
+  external double q;
+  @Int32()
+  external int type;
+}
+
+class DspEngineBindings {
+  late final DynamicLibrary _lib;
+
+  DspEngineBindings() {
+    _lib = DynamicLibrary.open(_libName);
+  }
+
+  static String get _libName {
+    // Platform-specific library name
+    // On Android the .so is loaded by the plugin; adjust as needed.
+    return 'libdsp_engine.so';
+  }
+
+  late final Pointer<Utf8> Function() dsp_version =
+      _lib.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('dsp_version');
+
+  late final Pointer<Void> Function(Pointer<DspConfigNative>) dsp_create =
+      _lib.lookupFunction<
+          Pointer<Void> Function(Pointer<DspConfigNative>),
+          Pointer<Void> Function(Pointer<DspConfigNative>)>('dsp_create');
+
+  late final void Function(Pointer<Void>) dsp_destroy =
+      _lib.lookupFunction<Void Function(Pointer<Void>), void Function(Pointer<Void>)>('dsp_destroy');
+
+  late final int Function(Pointer<Void>) dsp_reset =
+      _lib.lookupFunction<Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('dsp_reset');
+
+  late final int Function(Pointer<Void>, double) dsp_set_sample_rate =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Float),
+          int Function(Pointer<Void>, double)>('dsp_set_sample_rate');
+
+  late final int Function(Pointer<Void>, int) dsp_set_channels =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('dsp_set_channels');
+
+  late final int Function(Pointer<Void>, Pointer<Float>, Pointer<Float>, int) dsp_process =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Pointer<Float>, Pointer<Float>, Int32),
+          int Function(Pointer<Void>, Pointer<Float>, Pointer<Float>, int)>('dsp_process');
+
+  late final int Function(Pointer<Void>, int) dsp_eq_enable =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('dsp_eq_enable');
+
+  late final int Function(Pointer<Void>, Pointer<DspEqBandNative>, int) dsp_eq_set_bands =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Pointer<DspEqBandNative>, Int32),
+          int Function(Pointer<Void>, Pointer<DspEqBandNative>, int)>('dsp_eq_set_bands');
+
+  late final int Function(Pointer<Void>, double) dsp_dvc_set_gain_db =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Float),
+          int Function(Pointer<Void>, double)>('dsp_dvc_set_gain_db');
+
+  late final double Function(Pointer<Void>) dsp_dvc_get_gain_db =
+      _lib.lookupFunction<
+          Float Function(Pointer<Void>),
+          double Function(Pointer<Void>)>('dsp_dvc_get_gain_db');
+
+  late final int Function(Pointer<Void>, int) dsp_limiter_enable =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('dsp_limiter_enable');
+
+  late final int Function(Pointer<Void>, double) dsp_limiter_set_threshold =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Float),
+          int Function(Pointer<Void>, double)>('dsp_limiter_set_threshold');
+
+  late final int Function(Pointer<Void>, double) dsp_limiter_set_release =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Float),
+          int Function(Pointer<Void>, double)>('dsp_limiter_set_release');
+
+  late final int Function(Pointer<Void>, int) dsp_dither_enable =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('dsp_dither_enable');
+
+  late final int Function(Pointer<Void>, int) dsp_dither_set_mode =
+      _lib.lookupFunction<
+          Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('dsp_dither_set_mode');
 }
