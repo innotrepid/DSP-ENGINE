@@ -11,6 +11,9 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <avrt.h>
+#include <mmreg.h>
+#include <ks.h>
+#include <ksmedia.h>
 #include <atomic>
 #include <cstring>
 #include <mutex>
