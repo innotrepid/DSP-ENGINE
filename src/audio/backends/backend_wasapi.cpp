@@ -1,10 +1,6 @@
 /**
- * Windows WASAPI backend — shared and exclusive modes.
- *
- * Compiles when DSP_HAS_WASAPI is defined (auto on native Windows hosts).
- * Links: ole32, avrt.
+ * Windows WASAPI backend — matches IAudioBackend in backend.h
  */
-
 #include "audio/backends/backend.h"
 
 #if defined(DSP_HAS_WASAPI) && defined(_WIN32)
@@ -15,12 +11,10 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <avrt.h>
-#include <functiondiscoverykeys_devpkey.h>
 #include <atomic>
 #include <cstring>
 #include <mutex>
 #include <thread>
-#include <vector>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "avrt.lib")
@@ -34,10 +28,9 @@ public:
 
     DspError open(const BackendConfig& cfg) override {
         close();
-
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        // S_FALSE is ok if already initialized
-        if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return DSP_ERR_DEVICE;
+        if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE)
+            return DSP_ERR_DEVICE;
 
         IMMDeviceEnumerator* enumerator = nullptr;
         hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
@@ -45,12 +38,7 @@ public:
         if (FAILED(hr) || !enumerator) return DSP_ERR_DEVICE;
 
         IMMDevice* device = nullptr;
-        if (cfg.device_id > 0) {
-            // Simple: still use default for now; device_id can be extended later
-            hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-        } else {
-            hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-        }
+        hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
         enumerator->Release();
         if (FAILED(hr) || !device) return DSP_ERR_DEVICE;
 
@@ -59,63 +47,47 @@ public:
         device->Release();
         if (FAILED(hr) || !client) return DSP_ERR_DEVICE;
 
-        WAVEFORMATEX* mix = nullptr;
-        hr = client->GetMixFormat(&mix);
-        if (FAILED(hr) || !mix) {
-            client->Release();
-            return DSP_ERR_DEVICE;
-        }
-
-        // Prefer float32 if possible; otherwise use mix format and convert later if needed
         WAVEFORMATEXTENSIBLE wfx{};
         wfx.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
         wfx.Format.nChannels = static_cast<WORD>(cfg.channels);
-        wfx.Format.nSamplesPerSec = cfg.sample_rate;
+        wfx.Format.nSamplesPerSec = static_cast<DWORD>(cfg.sample_rate);
         wfx.Format.wBitsPerSample = 32;
         wfx.Format.nBlockAlign = (wfx.Format.nChannels * wfx.Format.wBitsPerSample) / 8;
         wfx.Format.nAvgBytesPerSec = wfx.Format.nSamplesPerSec * wfx.Format.nBlockAlign;
         wfx.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
         wfx.Samples.wValidBitsPerSample = 32;
-        wfx.dwChannelMask = (cfg.channels == 1) ? SPEAKER_FRONT_CENTER : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+        wfx.dwChannelMask = (cfg.channels == 1) ? SPEAKER_FRONT_CENTER
+                                                : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
         wfx.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 
-        REFERENCE_TIME duration = (REFERENCE_TIME)(10000000.0 * cfg.buffer_frames / cfg.sample_rate);
-        if (duration < 30000) duration = 30000; // ~3 ms minimum safety
+        REFERENCE_TIME duration = static_cast<REFERENCE_TIME>(
+            10000000.0 * cfg.buffer_frames / cfg.sample_rate);
+        if (duration < 30000) duration = 30000;
 
-        DWORD flags = 0;
-        if (cfg.exclusive) {
-            flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-            hr = client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, flags, duration, duration,
-                                    (WAVEFORMATEX*)&wfx, nullptr);
-            if (FAILED(hr)) {
-                // Fallback to shared
-                flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
-                hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, duration, 0,
-                                        (WAVEFORMATEX*)&wfx, nullptr);
-            }
-        } else {
+        DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        if (!cfg.exclusive)
+            flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+
+        hr = client->Initialize(
+            cfg.exclusive ? AUDCLNT_SHAREMODE_EXCLUSIVE : AUDCLNT_SHAREMODE_SHARED,
+            flags, duration, cfg.exclusive ? duration : 0,
+            (WAVEFORMATEX*)&wfx, nullptr);
+
+        if (FAILED(hr) && cfg.exclusive) {
             flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
             hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, duration, 0,
                                     (WAVEFORMATEX*)&wfx, nullptr);
         }
-
-        CoTaskMemFree(mix);
-
         if (FAILED(hr)) {
             client->Release();
             return DSP_ERR_DEVICE;
         }
 
-        // Event for callback-driven rendering
         event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!event_) {
-            client->Release();
-            return DSP_ERR_DEVICE;
-        }
+        if (!event_) { client->Release(); return DSP_ERR_DEVICE; }
         hr = client->SetEventHandle(event_);
         if (FAILED(hr)) {
-            CloseHandle(event_);
-            event_ = nullptr;
+            CloseHandle(event_); event_ = nullptr;
             client->Release();
             return DSP_ERR_DEVICE;
         }
@@ -123,8 +95,7 @@ public:
         IAudioRenderClient* render = nullptr;
         hr = client->GetService(__uuidof(IAudioRenderClient), (void**)&render);
         if (FAILED(hr) || !render) {
-            CloseHandle(event_);
-            event_ = nullptr;
+            CloseHandle(event_); event_ = nullptr;
             client->Release();
             return DSP_ERR_DEVICE;
         }
@@ -134,9 +105,9 @@ public:
 
         client_ = client;
         render_ = render;
-        actual_rate_ = cfg.sample_rate;
-        actual_ch_ = cfg.channels;
-        actual_frames_ = static_cast<int>(bufferFrames);
+        rate_   = cfg.sample_rate;
+        ch_     = cfg.channels;
+        frames_ = static_cast<int32_t>(bufferFrames);
         opened_ = true;
         xruns_.store(0, std::memory_order_relaxed);
         return DSP_OK;
@@ -154,21 +125,18 @@ public:
         if (!opened_ || !client_) return DSP_ERR_DEVICE;
         if (running_.load(std::memory_order_acquire)) return DSP_ERR_ALREADY_RUNNING;
 
-        // Pre-fill silence
         UINT32 padding = 0;
         client_->GetCurrentPadding(&padding);
-        UINT32 avail = actual_frames_ - padding;
+        UINT32 avail = static_cast<UINT32>(frames_) - padding;
         if (avail > 0) {
             BYTE* data = nullptr;
             if (SUCCEEDED(render_->GetBuffer(avail, &data)) && data) {
-                std::memset(data, 0, avail * actual_ch_ * sizeof(float));
+                std::memset(data, 0, avail * static_cast<UINT32>(ch_) * sizeof(float));
                 render_->ReleaseBuffer(avail, 0);
             }
         }
 
-        HRESULT hr = client_->Start();
-        if (FAILED(hr)) return DSP_ERR_DEVICE;
-
+        if (FAILED(client_->Start())) return DSP_ERR_DEVICE;
         running_.store(true, std::memory_order_release);
         thread_ = std::thread(&WasapiBackend::render_thread, this);
         return DSP_OK;
@@ -183,64 +151,57 @@ public:
         return DSP_OK;
     }
 
-    bool is_running() const override {
-        return running_.load(std::memory_order_acquire);
+    bool is_running() const override { return running_.load(std::memory_order_acquire); }
+    const char* name() const override { return "wasapi"; }
+    int32_t sample_rate() const override { return rate_; }
+    int32_t channels() const override { return ch_; }
+    int32_t buffer_frames() const override { return frames_; }
+    uint32_t xrun_count() const override {
+        return static_cast<uint32_t>(xruns_.load(std::memory_order_relaxed));
     }
 
-    int xrun_count() const override {
-        return xruns_.load(std::memory_order_relaxed);
-    }
-
-    int actual_sample_rate() const override { return actual_rate_; }
-    int actual_channels() const override { return actual_ch_; }
-    int actual_buffer_frames() const override { return actual_frames_; }
-
-    void set_render_callback(RenderCallback cb, void* user) override {
+    void set_render_callback(BackendRenderFn fn, void* user) override {
         std::lock_guard<std::mutex> lock(cb_mutex_);
-        callback_ = cb;
+        render_fn_ = fn;
         user_ = user;
     }
 
 private:
     void render_thread() {
-        // Raise thread priority for audio
         DWORD taskIndex = 0;
         HANDLE task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
 
         while (running_.load(std::memory_order_acquire)) {
-            DWORD wait = WaitForSingleObject(event_, 100);
-            if (wait != WAIT_OBJECT_0) continue;
+            if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) continue;
 
             UINT32 padding = 0;
             if (FAILED(client_->GetCurrentPadding(&padding))) {
                 xruns_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
-            UINT32 frames = actual_frames_ - padding;
-            if (frames == 0) continue;
+            UINT32 nframes = static_cast<UINT32>(frames_) - padding;
+            if (nframes == 0) continue;
 
             BYTE* data = nullptr;
-            HRESULT hr = render_->GetBuffer(frames, &data);
-            if (FAILED(hr) || !data) {
+            if (FAILED(render_->GetBuffer(nframes, &data)) || !data) {
                 xruns_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
             float* out = reinterpret_cast<float*>(data);
-            RenderCallback cb = nullptr;
+            BackendRenderFn cb = nullptr;
             void* u = nullptr;
             {
                 std::lock_guard<std::mutex> lock(cb_mutex_);
-                cb = callback_;
+                cb = render_fn_;
                 u = user_;
             }
-            if (cb) {
-                cb(u, out, static_cast<int>(frames));
-            } else {
-                std::memset(out, 0, frames * actual_ch_ * sizeof(float));
-            }
+            if (cb)
+                cb(out, static_cast<int32_t>(nframes), ch_, u);
+            else
+                std::memset(out, 0, nframes * static_cast<UINT32>(ch_) * sizeof(float));
 
-            render_->ReleaseBuffer(frames, 0);
+            render_->ReleaseBuffer(nframes, 0);
         }
 
         if (task) AvRevertMmThreadCharacteristics(task);
@@ -253,11 +214,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<int> xruns_{0};
     bool opened_ = false;
-    int actual_rate_ = 0;
-    int actual_ch_ = 0;
-    int actual_frames_ = 0;
-
-    RenderCallback callback_ = nullptr;
+    int32_t rate_ = 0, ch_ = 0, frames_ = 0;
+    BackendRenderFn render_fn_ = nullptr;
     void* user_ = nullptr;
     std::mutex cb_mutex_;
 };
@@ -268,7 +226,7 @@ IAudioBackend* create_wasapi_backend() {
 
 } // namespace dsp
 
-#else // !DSP_HAS_WASAPI || !_WIN32
+#else
 
 namespace dsp {
 IAudioBackend* create_wasapi_backend() { return nullptr; }
