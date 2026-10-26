@@ -3,7 +3,7 @@ description: >
   Flutter FFI bindings for DSP ENGINE — 64-bit audio processing with
   Direct Volume Control (DVC). Designed for integration with Resonate
   (com.aetherion.resonate). This package is a library, not a standalone app.
-version: 0.1.0
+version: 0.3.0
 homepage: https://github.com/innotrepid/DSP-ENGINE
 repository: https://github.com/innotrepid/DSP-ENGINE
 
