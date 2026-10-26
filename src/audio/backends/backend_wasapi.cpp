@@ -7,17 +7,30 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#define INITGUID
 #include <windows.h>
+#include <objbase.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <avrt.h>
 #include <mmreg.h>
-#include <ks.h>
-#include <ksmedia.h>
 #include <atomic>
 #include <cstring>
 #include <mutex>
 #include <thread>
+
+// Avoid ksmedia.h conflicts on some SDK combos
+#ifndef SPEAKER_FRONT_LEFT
+#define SPEAKER_FRONT_LEFT   0x1
+#define SPEAKER_FRONT_RIGHT  0x2
+#define SPEAKER_FRONT_CENTER 0x4
+#endif
+#ifndef KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+// {00000003-0000-0010-8000-00aa00389b71}
+static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = {
+    0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+};
+#endif
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "avrt.lib")
