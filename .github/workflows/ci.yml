@@ -60,21 +60,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        shell: cmd
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DDSP_BUILD_TESTS=ON -DDSP_BUILD_EXAMPLES=ON -DDSP_BACKEND_AAUDIO=OFF -DDSP_BACKEND_WASAPI=ON -DDSP_BACKEND_COREAUDIO=OFF
+          cmake -B build -A x64 `
+            -DDSP_BUILD_TESTS=ON `
+            -DDSP_BUILD_EXAMPLES=ON `
+            -DDSP_BACKEND_AAUDIO=OFF `
+            -DDSP_BACKEND_WASAPI=ON `
+            -DDSP_BACKEND_COREAUDIO=OFF
       - name: Build
-        shell: cmd
-        run: cmake --build build --config Release -j
+        run: cmake --build build --config Release --parallel
       - name: Unit tests
-        shell: cmd
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Benchmarks
-        shell: cmd
-        run: build\tests\Release\benchmarks.exe
+        run: .\build\tests\Release\benchmarks.exe
       - name: Example
-        shell: cmd
-        run: build\examples\Release\dsp_example_offline.exe
+        run: .\build\examples\Release\dsp_example_offline.exe
 
   build-android:
     name: Build (Android NDK)
