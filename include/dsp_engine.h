@@ -19,7 +19,9 @@ extern "C" {
 #include <stdint.h>
 
 #if defined(_WIN32) || defined(__CYGWIN__)
-  #ifdef DSP_ENGINE_EXPORTS
+  #if defined(DSP_ENGINE_STATIC)
+    #define DSP_API
+  #elif defined(DSP_ENGINE_EXPORTS)
     #define DSP_API __declspec(dllexport)
   #else
     #define DSP_API __declspec(dllimport)
@@ -96,20 +98,21 @@ DSP_API DspError   dsp_set_channels(DspEngine* eng, int channels);
 /* Processing                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** Process interleaved float samples in-place (or out-of-place if out != in). */
+/** Process interleaved float32 in-place style: in -> out, frames samples per channel. */
 DSP_API DspError dsp_process(DspEngine* eng,
                              const float* in,
                              float* out,
                              int frames);
 
-/** Process with sample-rate conversion. */
+/**
+ * Sample-rate conversion + process.
+ * ratio = input_rate / output_rate (e.g. 1.5 upsamples by 1.5x).
+ * *out_frames is capacity on input, actual frames written on output.
+ */
 DSP_API DspError dsp_process_src(DspEngine* eng,
-                                 const float* in,
-                                 int in_frames,
-                                 float* out,
-                                 int* out_frames,
-                                 float ratio,
-                                 DspSrcQuality quality);
+                                 const float* in, int in_frames,
+                                 float* out, int* out_frames,
+                                 float ratio, DspSrcQuality quality);
 
 /* -------------------------------------------------------------------------- */
 /* EQ                                                                         */
