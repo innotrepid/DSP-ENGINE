@@ -77,6 +77,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     endif()
 elseif(MSVC)
     list(APPEND DSP_OPT_FLAGS /O2 /fp:fast)
+    add_compile_definitions(_USE_MATH_DEFINES)
+    add_compile_definitions(NOMINMAX)
 endif()
 add_compile_options(${DSP_OPT_FLAGS})
 
@@ -172,7 +174,6 @@ if(DSP_BUILD_SHARED)
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR}
     )
-    # Avoid symlink creation issues on restricted filesystems
     if(UNIX AND NOT APPLE)
         set_target_properties(dsp_engine PROPERTIES
             SKIP_BUILD_RPATH FALSE
@@ -190,7 +191,6 @@ if(DSP_BUILD_STATIC)
     configure_dsp_target(dsp_engine_static)
     list(APPEND DSP_INSTALL_TARGETS dsp_engine_static)
 
-    # Provide a consistent name for consumers when only static is built
     if(NOT DSP_BUILD_SHARED)
         add_library(dsp_engine ALIAS dsp_engine_static)
     endif()
