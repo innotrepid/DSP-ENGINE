@@ -1,19 +1,29 @@
 /**
- * Minimal single-header test framework for DSP ENGINE.
- * No external dependencies.
+ * Minimal unit-test framework.
+ * Tests are REGISTERED in static initializers but only RUN from main()
+ * (avoids Windows loader-lock deadlock when tests call into a shared DLL).
  */
 #ifndef DSP_TEST_FRAMEWORK_H
 #define DSP_TEST_FRAMEWORK_H
 
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <functional>
 
 namespace dsp_test {
+
+struct TestCase {
+    const char* name;
+    void (*fn)();
+};
+
+inline std::vector<TestCase>& registry() {
+    static std::vector<TestCase> r;
+    return r;
+}
 
 struct TestResult {
     const char* name;
@@ -26,31 +36,17 @@ inline std::vector<TestResult>& results() {
     return r;
 }
 
-inline int& total() {
-    static int t = 0;
-    return t;
-}
-
 inline int& failed() {
     static int f = 0;
     return f;
 }
 
+/** Register only — do not execute the test body here. */
 #define TEST(name) \
     static void test_##name(); \
     struct TestReg_##name { \
         TestReg_##name() { \
-            dsp_test::total()++; \
-            try { \
-                test_##name(); \
-                dsp_test::results().push_back({#name, true, ""}); \
-            } catch (const std::string& msg) { \
-                dsp_test::failed()++; \
-                dsp_test::results().push_back({#name, false, msg}); \
-            } catch (...) { \
-                dsp_test::failed()++; \
-                dsp_test::results().push_back({#name, false, "unknown exception"}); \
-            } \
+            dsp_test::registry().push_back({#name, &test_##name}); \
         } \
     }; \
     static TestReg_##name reg_##name; \
@@ -67,7 +63,7 @@ inline int& failed() {
     do { \
         if ((a) != (b)) { \
             char buf[256]; \
-            snprintf(buf, sizeof(buf), "EXPECT_EQ failed: %s != %s", #a, #b); \
+            std::snprintf(buf, sizeof(buf), "EXPECT_EQ failed: %s != %s", #a, #b); \
             throw std::string(buf); \
         } \
     } while (0)
@@ -77,7 +73,7 @@ inline int& failed() {
         double _a = (double)(a), _b = (double)(b); \
         if (std::fabs(_a - _b) > (tol)) { \
             char buf[256]; \
-            snprintf(buf, sizeof(buf), "EXPECT_NEAR failed: %g vs %g (tol %g)", _a, _b, (double)(tol)); \
+            std::snprintf(buf, sizeof(buf), "EXPECT_NEAR failed: %g vs %g (tol %g)", _a, _b, (double)(tol)); \
             throw std::string(buf); \
         } \
     } while (0)
@@ -88,15 +84,27 @@ inline int& failed() {
 #define EXPECT_LE(a, b) EXPECT_TRUE((a) <= (b))
 
 inline int run_all() {
+    results().clear();
+    failed() = 0;
     printf("\n=== DSP ENGINE unit tests ===\n");
-    for (const auto& r : results()) {
-        if (r.passed)
-            printf("[ PASS ] %s\n", r.name);
-        else
-            printf("[ FAIL ] %s — %s\n", r.name, r.message.c_str());
+    for (const auto& tc : registry()) {
+        try {
+            tc.fn();
+            results().push_back({tc.name, true, ""});
+            printf("[ PASS ] %s\n", tc.name);
+        } catch (const std::string& msg) {
+            failed()++;
+            results().push_back({tc.name, false, msg});
+            printf("[ FAIL ] %s — %s\n", tc.name, msg.c_str());
+        } catch (...) {
+            failed()++;
+            results().push_back({tc.name, false, "unknown exception"});
+            printf("[ FAIL ] %s — unknown exception\n", tc.name);
+        }
     }
     printf("------------------------------\n");
-    printf("%d tests, %d failed\n\n", total(), failed());
+    printf("%d tests, %d failed\n\n",
+           static_cast<int>(registry().size()), failed());
     return failed() == 0 ? 0 : 1;
 }
 

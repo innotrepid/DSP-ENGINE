@@ -9,7 +9,10 @@ target_include_directories(unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(unit_tests PRIVATE dsp_engine)
+
+# Cap wall time so a hang fails the job instead of blocking runners.
 add_test(NAME unit_tests COMMAND unit_tests)
+set_tests_properties(unit_tests PROPERTIES TIMEOUT 60)
 
 add_executable(benchmarks
     benchmarks.cpp
@@ -20,5 +23,4 @@ target_include_directories(benchmarks PRIVATE
 )
 target_link_libraries(benchmarks PRIVATE dsp_engine)
 
-# Optional: run benchmarks as a test that always passes (just for CI visibility)
-add_test(NAME benchmarks COMMAND benchmarks)
+# Benchmarks are a separate CI step — do not register with ctest.
