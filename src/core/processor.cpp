@@ -1,8 +1,8 @@
 /**
- * DSP ENGINE — Core processor (compatible with existing eq_biquad.h / backend.h)
+ * DSP ENGINE — Core processor
  *
- * Pipeline: EQ (MultiBandEq) → DVC → true-peak limiter → dither
- * Optional SRC via dsp_process_src.
+ * Pipeline: EQ (MultiBandEq, typed RBJ) → DVC → true-peak limiter → dither
+ * Optional SRC via dsp_process_src (linear / cubic / windowed-sinc HQ).
  * Real-time safe after construction (no allocations on the process path).
  */
 
@@ -15,6 +15,10 @@
 #include <new>
 #include <vector>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #ifdef DSP_USE_DOUBLE
 using sample_t = double;
 #else
@@ -26,9 +30,23 @@ namespace {
 constexpr int kMaxChannels = 8;
 constexpr int kMaxEqBands  = 16;
 constexpr int kMaxBlock    = 8192;
+constexpr int kSincHalf    = 16;
 
 inline sample_t db_to_lin(float db) {
     return static_cast<sample_t>(std::pow(10.0, static_cast<double>(db) / 20.0));
+}
+
+inline float sinc_weight(float x) {
+    if (x == 0.f) return 1.f;
+    const float pix = static_cast<float>(M_PI) * x;
+    float s = std::sin(pix) / pix;
+    if (x > -kSincHalf && x < kSincHalf) {
+        float w = 0.5f + 0.5f * std::cos(static_cast<float>(M_PI) * x / kSincHalf);
+        s *= w;
+    } else {
+        s = 0.f;
+    }
+    return s;
 }
 
 } // anonymous
@@ -47,34 +65,26 @@ struct DspEngine {
     float limiter_threshold_db = -1.0f;
     float limiter_release_ms   = 50.f;
 
-    // EQ (uses the real MultiBandEq from eq_biquad.h)
     dsp::MultiBandEq eq;
     int eq_band_count = 0;
     DspEqBand eq_bands[kMaxEqBands]{};
 
-    // DVC
     float    dvc_gain_db  = 0.f;
     sample_t dvc_gain_lin = sample_t(1);
 
-    // Limiter
     sample_t lim_env[kMaxChannels]{};
     sample_t lim_gain[kMaxChannels]{};
     sample_t lim_attack  = sample_t(0.001);
     sample_t lim_release = sample_t(0.05);
     sample_t lim_thresh  = sample_t(0.89);
 
-    // Dither
     uint32_t dither_state[kMaxChannels]{};
 
-    // Working buffers (de-interleaved)
     alignas(32) sample_t temp[kMaxChannels][kMaxBlock]{};
-    // Interleaved work buffer for process path
     alignas(32) sample_t work[kMaxBlock * kMaxChannels]{};
 
-    // Pointers for MultiBandEq::process(double**, int)
     double* eq_ptrs[kMaxChannels]{};
 
-    // SRC
     float src_phase = 0.f;
 
     DspEngine() {
@@ -94,13 +104,10 @@ struct DspEngine {
 
     void rebuild_eq() {
         eq.init(sample_rate, channels);
-        if (eq_band_count <= 0) {
-            eq.set_enabled(false);
-            return;
-        }
+        eq.set_band_count(eq_band_count);
         for (int i = 0; i < eq_band_count && i < kMaxEqBands; ++i) {
             const DspEqBand& b = eq_bands[i];
-            eq.set_band(i, b.freq_hz, b.gain_db, b.q > 0.f ? b.q : 1.0);
+            eq.set_band(i, b.freq_hz, b.gain_db, b.q > 0.f ? b.q : 1.0, b.type);
         }
         eq.set_enabled(eq_enabled);
     }
@@ -167,6 +174,22 @@ DspError dsp_set_channels(DspEngine* eng, int channels) {
     return DSP_OK;
 }
 
+static sample_t true_peak_pair(sample_t a, sample_t b) {
+    sample_t peak = a >= 0 ? a : -a;
+    sample_t ab = b >= 0 ? b : -b;
+    if (ab > peak) peak = ab;
+    sample_t m = sample_t(0.5) * (a + b);
+    sample_t am = m >= 0 ? m : -m;
+    if (am > peak) peak = am;
+    sample_t q1 = a * sample_t(0.75) + b * sample_t(0.25);
+    sample_t q3 = a * sample_t(0.25) + b * sample_t(0.75);
+    sample_t aq1 = q1 >= 0 ? q1 : -q1;
+    sample_t aq3 = q3 >= 0 ? q3 : -q3;
+    if (aq1 > peak) peak = aq1;
+    if (aq3 > peak) peak = aq3;
+    return peak;
+}
+
 static void process_block(DspEngine* eng, sample_t* interleaved, int frames) {
     const int ch = eng->channels;
 
@@ -207,37 +230,42 @@ static void process_block(DspEngine* eng, sample_t* interleaved, int frames) {
         const sample_t thr = eng->lim_thresh;
         const sample_t atk = eng->lim_attack;
         const sample_t rel = eng->lim_release;
-        for (int c = 0; c < ch; ++c) {
-            sample_t env  = eng->lim_env[c];
-            sample_t gain = eng->lim_gain[c];
-            for (int i = 0; i < frames; ++i) {
-                sample_t x  = eng->temp[c][i];
+        for (int i = 0; i < frames; ++i) {
+            sample_t peak = sample_t(0);
+            for (int c = 0; c < ch; ++c) {
+                sample_t x = eng->temp[c][i];
                 sample_t ax = x >= 0 ? x : -x;
-                sample_t peak = ax;
+                if (ax > peak) peak = ax;
                 if (i + 1 < frames) {
-                    sample_t n  = eng->temp[c][i + 1];
-                    sample_t an = n >= 0 ? n : -n;
-                    if (an > peak) peak = an;
+                    sample_t tp = true_peak_pair(eng->temp[c][i], eng->temp[c][i + 1]);
+                    if (tp > peak) peak = tp;
                 }
-                if (peak > env)
-                    env += atk * (peak - env);
-                else
-                    env += rel * (peak - env);
-
-                sample_t target = (env > thr) ? (thr / (env + sample_t(1e-12))) : sample_t(1);
-                if (target < gain)
-                    gain += atk * (target - gain);
-                else
-                    gain += rel * (target - gain);
-
-                eng->temp[c][i] = x * gain;
             }
-            eng->lim_env[c]  = env;
-            eng->lim_gain[c] = gain;
+            sample_t env = eng->lim_env[0];
+            sample_t gain = eng->lim_gain[0];
+            if (peak > env)
+                env += atk * (peak - env);
+            else
+                env += rel * (peak - env);
+
+            sample_t target = (env > thr) ? (thr / (env + sample_t(1e-12))) : sample_t(1);
+            if (target < gain)
+                gain += atk * (target - gain);
+            else
+                gain += rel * (target - gain);
+
+            eng->lim_env[0]  = env;
+            eng->lim_gain[0] = gain;
+            for (int c = 0; c < ch; ++c)
+                eng->temp[c][i] *= gain;
+        }
+        for (int c = 1; c < ch; ++c) {
+            eng->lim_env[c]  = eng->lim_env[0];
+            eng->lim_gain[c] = eng->lim_gain[0];
         }
     }
 
-    if (eng->dither_enabled) {
+    if (eng->dither_enabled && eng->dither_mode != DSP_DITHER_NONE) {
         for (int c = 0; c < ch; ++c) {
             uint32_t s = eng->dither_state[c];
             for (int i = 0; i < frames; ++i) {
@@ -271,7 +299,6 @@ DspError dsp_process(DspEngine* eng, const float* in, float* out, int frames) {
 
     for (int i = 0; i < n; ++i)
         out[i] = static_cast<float>(eng->work[i]);
-
     return DSP_OK;
 }
 
@@ -298,24 +325,36 @@ DspError dsp_process_src(DspEngine* eng,
     while (written < max_out) {
         int i0 = static_cast<int>(phase);
         float frac = phase - static_cast<float>(i0);
-        if (i0 >= in_frames - 1) break;
+        if (i0 >= in_frames - 1 && quality != DSP_SRC_HQ) break;
+        if (i0 >= in_frames) break;
 
         for (int c = 0; c < ch; ++c) {
             float y;
-            if (quality == DSP_SRC_CUBIC || quality == DSP_SRC_HQ) {
+            if (quality == DSP_SRC_HQ) {
+                float sum = 0.f;
+                float wsum = 0.f;
+                for (int k = -kSincHalf; k <= kSincHalf; ++k) {
+                    float w = sinc_weight(static_cast<float>(k) - frac);
+                    sum  += w * sample_at(i0 + k, c);
+                    wsum += w;
+                }
+                y = (wsum != 0.f) ? (sum / wsum) : sample_at(i0, c);
+            } else if (quality == DSP_SRC_CUBIC) {
                 float y0 = sample_at(i0 - 1, c);
-                float y1 = sample_at(i0, c);
+                float y1 = sample_at(i0,     c);
                 float y2 = sample_at(i0 + 1, c);
                 float y3 = sample_at(i0 + 2, c);
-                float a0 = -0.5f*y0 + 1.5f*y1 - 1.5f*y2 + 0.5f*y3;
-                float a1 = y0 - 2.5f*y1 + 2.f*y2 - 0.5f*y3;
-                float a2 = -0.5f*y0 + 0.5f*y2;
+                float a0 = -0.5f * y0 + 1.5f * y1 - 1.5f * y2 + 0.5f * y3;
+                float a1 = y0 - 2.5f * y1 + 2.f * y2 - 0.5f * y3;
+                float a2 = -0.5f * y0 + 0.5f * y2;
                 float a3 = y1;
-                y = ((a0*frac + a1)*frac + a2)*frac + a3;
-            } else {
-                float y1 = sample_at(i0, c);
+                y = ((a0 * frac + a1) * frac + a2) * frac + a3;
+            } else if (quality == DSP_SRC_LINEAR) {
+                float y1 = sample_at(i0,     c);
                 float y2 = sample_at(i0 + 1, c);
                 y = y1 + frac * (y2 - y1);
+            } else {
+                y = sample_at(i0, c);
             }
             out[written * ch + c] = y;
         }
@@ -323,7 +362,11 @@ DspError dsp_process_src(DspEngine* eng,
         phase += ratio;
     }
 
-    eng->src_phase = phase - static_cast<float>(static_cast<int>(phase));
+    if (phase >= static_cast<float>(in_frames))
+        eng->src_phase = 0.f;
+    else
+        eng->src_phase = phase - static_cast<float>(static_cast<int>(phase));
+
     *out_frames = written;
     return DSP_OK;
 }
