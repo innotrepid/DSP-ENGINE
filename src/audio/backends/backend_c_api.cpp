@@ -1,9 +1,8 @@
 /**
- * C ABI wrappers around IAudioBackend — matches include/dsp_engine.h
+ * C API wrappers for platform audio backends.
  */
-
-#include "audio/backends/backend.h"
 #include "dsp_engine.h"
+#include "audio/backends/backend.h"
 #include <cstring>
 #include <new>
 
@@ -11,14 +10,20 @@ struct DspBackend {
     dsp::IAudioBackend* impl = nullptr;
     DspRenderCallback user_cb = nullptr;
     void* user_data = nullptr;
+    int channels = 2;
 };
 
-static void adapt_render(float* out, int32_t frames, int32_t /*channels*/, void* user) {
+static void adapt_render(float* out, int32_t frames, int32_t channels, void* user) {
     auto* be = static_cast<DspBackend*>(user);
-    if (be && be->user_cb)
+    if (be && be->user_cb) {
         be->user_cb(be->user_data, out, frames);
-    else if (out && frames > 0)
-        std::memset(out, 0, static_cast<size_t>(frames) * 2 * sizeof(float));
+        return;
+    }
+    if (out && frames > 0) {
+        const int ch = (channels > 0) ? channels
+                     : (be && be->channels > 0) ? be->channels : 2;
+        std::memset(out, 0, static_cast<size_t>(frames) * static_cast<size_t>(ch) * sizeof(float));
+    }
 }
 
 extern "C" {
@@ -51,7 +56,10 @@ DSP_API DspError dsp_backend_open(DspBackend* be, const DspBackendConfig* cfg) {
     c.buffer_frames = cfg->buffer_frames;
     c.exclusive     = cfg->exclusive != 0;
     c.device_id     = cfg->device_id;
-    return be->impl->open(c);
+    DspError err = be->impl->open(c);
+    if (err == DSP_OK)
+        be->channels = cfg->channels > 0 ? cfg->channels : 2;
+    return err;
 }
 
 DSP_API void dsp_backend_close(DspBackend* be) {
