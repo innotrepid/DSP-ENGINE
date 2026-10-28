@@ -111,7 +111,6 @@ TEST(dither) {
     std::vector<float> out(frames * 2);
     EXPECT_EQ(dsp_process(eng, in.data(), out.data(), frames), DSP_OK);
     EXPECT_TRUE(std::isfinite(out[0]));
-    /* 16-bit quantize: |out - 0.25| should be within ~2 LSB */
     EXPECT_NEAR(out[0], 0.25f, 3.0f / 32768.f);
     dsp_destroy(eng);
 }
@@ -153,6 +152,26 @@ TEST(src_pipeline) {
     EXPECT_EQ(dsp_process_src(eng, in.data(), in_frames, out.data(), &out_frames, 1.0f, DSP_SRC_LINEAR), DSP_OK);
     EXPECT_GT(out_frames, 0);
     EXPECT_NEAR(out[0], 0.5f * 0.501187f, 0.02f);
+    dsp_destroy(eng);
+}
+
+TEST(limiter_getters) {
+    DspEngine* eng = create_engine();
+    EXPECT_EQ(dsp_limiter_set_threshold(eng, -3.0f), DSP_OK);
+    EXPECT_EQ(dsp_limiter_set_release(eng, 80.f), DSP_OK);
+    EXPECT_EQ(dsp_limiter_enable(eng, 1), DSP_OK);
+    EXPECT_NEAR(dsp_limiter_get_threshold(eng), -3.0f, 1e-5);
+    EXPECT_NEAR(dsp_limiter_get_release(eng), 80.f, 1e-5);
+    EXPECT_EQ(dsp_limiter_is_enabled(eng), 1);
+    dsp_destroy(eng);
+}
+
+TEST(dither_getters) {
+    DspEngine* eng = create_engine();
+    EXPECT_EQ(dsp_dither_set_mode(eng, DSP_DITHER_SHAPED), DSP_OK);
+    EXPECT_EQ(dsp_dither_enable(eng, 1), DSP_OK);
+    EXPECT_EQ(dsp_dither_get_mode(eng), DSP_DITHER_SHAPED);
+    EXPECT_EQ(dsp_dither_is_enabled(eng), 1);
     dsp_destroy(eng);
 }
 
