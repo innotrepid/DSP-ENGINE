@@ -71,6 +71,10 @@ add_compile_options(${DSP_OPT_FLAGS})
 
 set(DSP_LIB_SOURCES
     src/core/processor.cpp
+    src/core/dvc.cpp
+    src/core/resampler.cpp
+    src/utils/math_utils.cpp
+    src/audio/ring_buffer.cpp
     src/audio/backends/backend_stubs.cpp
     src/audio/backends/backend_aaudio.cpp
     src/audio/backends/backend_coreaudio.cpp
@@ -109,7 +113,6 @@ function(configure_dsp_target target_name)
             else()
                 target_link_libraries(${target_name} PRIVATE aaudio)
             endif()
-            # AAudio backend uses __android_log_print
             find_library(ANDROID_LOG_LIB log)
             if(ANDROID_LOG_LIB)
                 target_link_libraries(${target_name} PRIVATE ${ANDROID_LOG_LIB})

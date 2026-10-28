@@ -16,17 +16,13 @@ public:
     explicit RingBuffer(size_t capacity_frames, int channels);
     ~RingBuffer() = default;
 
-    // Non-copyable
     RingBuffer(const RingBuffer&) = delete;
     RingBuffer& operator=(const RingBuffer&) = delete;
 
     size_t capacity() const { return capacity_; }
     int channels() const { return channels_; }
 
-    // Write up to frames; returns frames actually written
     size_t write(const float* interleaved, size_t frames);
-
-    // Read up to frames; returns frames actually read
     size_t read(float* interleaved, size_t frames);
 
     size_t available_read() const;

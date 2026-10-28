@@ -11,7 +11,7 @@ namespace dsp {
 RingBuffer::RingBuffer(size_t capacity_frames, int channels)
     : capacity_(capacity_frames)
     , channels_(channels)
-    , data_(capacity_frames * channels, 0.f)
+    , data_(capacity_frames * static_cast<size_t>(channels), 0.f)
 {
 }
 
@@ -25,9 +25,11 @@ size_t RingBuffer::write(const float* interleaved, size_t frames) {
     if (n == 0) return 0;
 
     size_t first = std::min(n, capacity_ - w);
-    std::memcpy(data_.data() + w * channels_, interleaved, first * channels_ * sizeof(float));
+    std::memcpy(data_.data() + w * static_cast<size_t>(channels_), interleaved,
+                first * static_cast<size_t>(channels_) * sizeof(float));
     if (n > first) {
-        std::memcpy(data_.data(), interleaved + first * channels_, (n - first) * channels_ * sizeof(float));
+        std::memcpy(data_.data(), interleaved + first * static_cast<size_t>(channels_),
+                    (n - first) * static_cast<size_t>(channels_) * sizeof(float));
     }
     write_pos_.store((w + n) % capacity_, std::memory_order_release);
     return n;
@@ -43,9 +45,11 @@ size_t RingBuffer::read(float* interleaved, size_t frames) {
     if (n == 0) return 0;
 
     size_t first = std::min(n, capacity_ - r);
-    std::memcpy(interleaved, data_.data() + r * channels_, first * channels_ * sizeof(float));
+    std::memcpy(interleaved, data_.data() + r * static_cast<size_t>(channels_),
+                first * static_cast<size_t>(channels_) * sizeof(float));
     if (n > first) {
-        std::memcpy(interleaved + first * channels_, data_.data(), (n - first) * channels_ * sizeof(float));
+        std::memcpy(interleaved + first * static_cast<size_t>(channels_), data_.data(),
+                    (n - first) * static_cast<size_t>(channels_) * sizeof(float));
     }
     read_pos_.store((r + n) % capacity_, std::memory_order_release);
     return n;
