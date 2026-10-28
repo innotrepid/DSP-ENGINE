@@ -16,16 +16,13 @@ project(DSP_ENGINE
 # Options
 # -----------------------------------------------------------------------------
 option(DSP_BUILD_SHARED     "Build shared library"                  ON)
-option(DSP_BUILD_STATIC     "Build static library"                  OFF)
-option(DSP_BUILD_EXAMPLES   "Build example programs"                ON)
-option(DSP_BUILD_TESTS      "Build unit tests"                      OFF)
-option(DSP_ENABLE_SIMD      "Enable SIMD optimizations (AVX2/NEON)" ON)
-option(DSP_ENABLE_RT        "Enable real-time thread priority"      ON)
-option(DSP_BIT_PERFECT      "Compile with bit-perfect path enabled" ON)
-option(DSP_DOUBLE_PRECISION "Use float64 for internal processing"   ON)
+option(DSP_BUILD_STATIC     "Build static library"                  ON)
+option(DSP_BUILD_TESTS      "Build unit tests and benchmarks"       ON)
+option(DSP_BUILD_EXAMPLES   "Build example apps"                    ON)
+option(DSP_ENABLE_SIMD      "Enable SIMD (AVX2/NEON) optimizations" ON)
+option(DSP_BIT_PERFECT      "Enable bit-perfect processing path"    ON)
+option(DSP_USE_DOUBLE       "Use double precision internally"       ON)
 
-# Platform backends — auto-enabled on the matching host OS unless overridden.
-# Cross-compiling: pass -DDSP_BACKEND_*=ON/OFF explicitly.
 if(ANDROID)
     set(_DSP_DEFAULT_AAUDIO ON)
 else()
@@ -42,55 +39,53 @@ else()
     set(_DSP_DEFAULT_COREAUDIO OFF)
 endif()
 
-option(DSP_BACKEND_AAUDIO    "Android AAudio backend"               ${_DSP_DEFAULT_AAUDIO})
-option(DSP_BACKEND_WASAPI    "Windows WASAPI exclusive/shared"      ${_DSP_DEFAULT_WASAPI})
-option(DSP_BACKEND_COREAUDIO "macOS/iOS Core Audio"                 ${_DSP_DEFAULT_COREAUDIO})
-option(DSP_BACKEND_ALSA      "Linux ALSA"                           OFF)
-option(DSP_BACKEND_JACK      "Linux JACK"                           OFF)
-option(DSP_BACKEND_PIPEWIRE  "Linux PipeWire"                       OFF)
+option(DSP_BACKEND_AAUDIO    "Build AAudio backend (Android)"       ${_DSP_DEFAULT_AAUDIO})
+option(DSP_BACKEND_WASAPI    "Build WASAPI backend (Windows)"       ${_DSP_DEFAULT_WASAPI})
+option(DSP_BACKEND_COREAUDIO "Build Core Audio backend (Apple)"     ${_DSP_DEFAULT_COREAUDIO})
+option(DSP_BACKEND_ALSA      "Build ALSA backend (Linux) — stub"    OFF)
+option(DSP_BACKEND_JACK      "Build JACK backend — stub"            OFF)
+option(DSP_BACKEND_PIPEWIRE  "Build PipeWire backend — stub"        OFF)
 
-# -----------------------------------------------------------------------------
-# C++ standard & global flags
-# -----------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(NOT CMAKE_BUILD_TYPE)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Optimization flags
-set(DSP_OPT_FLAGS "")
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    list(APPEND DSP_OPT_FLAGS -O3 -ffast-math -fno-math-errno -fno-trapping-math)
+if(MSVC)
+    set(DSP_OPT_FLAGS /O2 /fp:fast)
     if(DSP_ENABLE_SIMD)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-            list(APPEND DSP_OPT_FLAGS -mavx2 -mfma)
-        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-            list(APPEND DSP_OPT_FLAGS -march=armv8-a+simd)
-        endif()
+        # Leave /arch to the user or default; MSVC needs explicit /arch:AVX2
     endif()
-elseif(MSVC)
-    list(APPEND DSP_OPT_FLAGS /O2 /fp:fast)
     add_compile_definitions(_USE_MATH_DEFINES)
     add_compile_definitions(NOMINMAX)
+else()
+    set(DSP_OPT_FLAGS -O3 -ffast-math -fno-exceptions -fno-rtti)
+    if(DSP_ENABLE_SIMD)
+        include(CheckCXXCompilerFlag)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+            check_cxx_compiler_flag("-mavx2" HAS_AVX2)
+            if(HAS_AVX2)
+                list(APPEND DSP_OPT_FLAGS -mavx2 -mfma)
+            endif()
+        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+            # NEON is default on aarch64
+        endif()
+    endif()
 endif()
 add_compile_options(${DSP_OPT_FLAGS})
 
 # -----------------------------------------------------------------------------
 # Sources
 # -----------------------------------------------------------------------------
+# Core + backends only. Offline helpers (resampler kernel builder, ring buffer,
+# standalone DVC/math utils) remain in-tree for reference but are not linked —
+# SRC lives in processor.cpp; no consumer used the ring buffer yet.
 set(DSP_LIB_SOURCES
     src/core/processor.cpp
-    src/core/dvc.cpp
-    src/core/resampler.cpp
-    src/utils/math_utils.cpp
-    src/audio/ring_buffer.cpp
     src/audio/backends/backend_stubs.cpp
     src/audio/backends/backend_aaudio.cpp
     src/audio/backends/backend_coreaudio.cpp
@@ -108,63 +103,31 @@ function(configure_dsp_target target_name)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
-
     target_compile_definitions(${target_name}
         PRIVATE
-            $<$<BOOL:${DSP_DOUBLE_PRECISION}>:DSP_USE_DOUBLE>
+            $<$<BOOL:${DSP_USE_DOUBLE}>:DSP_USE_DOUBLE>
             $<$<BOOL:${DSP_BIT_PERFECT}>:DSP_BIT_PERFECT_PATH>
-            $<$<BOOL:${DSP_ENABLE_RT}>:DSP_ENABLE_REALTIME>
-            $<$<BOOL:${DSP_ENABLE_SIMD}>:DSP_ENABLE_SIMD>
+            $<$<BOOL:${DSP_ENABLE_SIMD}>:DSP_SIMD_ENABLED>
     )
-
-    # Platform backends
-    if(ANDROID AND DSP_BACKEND_AAUDIO)
+    if(DSP_BACKEND_AAUDIO)
         target_compile_definitions(${target_name} PRIVATE DSP_HAS_AAUDIO)
-        find_library(AAUDIO_LIB aaudio)
-        if(AAUDIO_LIB)
-            target_link_libraries(${target_name} PRIVATE ${AAUDIO_LIB})
-        else()
+        if(ANDROID)
             target_link_libraries(${target_name} PRIVATE aaudio)
         endif()
-        find_library(ANDROID_LOG_LIB log)
-        if(ANDROID_LOG_LIB)
-            target_link_libraries(${target_name} PRIVATE ${ANDROID_LOG_LIB})
-        endif()
-        message(STATUS "AAudio backend enabled for ${target_name}")
     endif()
-
-    if(WIN32 AND DSP_BACKEND_WASAPI)
+    if(DSP_BACKEND_WASAPI)
         target_compile_definitions(${target_name} PRIVATE DSP_HAS_WASAPI)
-        target_link_libraries(${target_name} PRIVATE ole32 avrt)
-        message(STATUS "WASAPI backend enabled for ${target_name}")
+        if(WIN32)
+            target_link_libraries(${target_name} PRIVATE ole32 uuid avrt)
+        endif()
     endif()
-
-    if(APPLE AND DSP_BACKEND_COREAUDIO)
+    if(DSP_BACKEND_COREAUDIO)
         target_compile_definitions(${target_name} PRIVATE DSP_HAS_COREAUDIO)
-        target_link_libraries(${target_name} PRIVATE
-            "-framework AudioUnit"
-            "-framework AudioToolbox"
-            "-framework CoreAudio"
-        )
-        message(STATUS "Core Audio backend enabled for ${target_name}")
+        if(APPLE)
+            target_link_libraries(${target_name} PRIVATE "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
+        endif()
     endif()
-
-    if(UNIX AND DSP_ENABLE_RT)
-        find_package(Threads REQUIRED)
-        target_link_libraries(${target_name} PRIVATE Threads::Threads)
-    endif()
-
-    set_target_properties(${target_name} PROPERTIES
-        PUBLIC_HEADER "include/dsp_engine.h"
-        CXX_VISIBILITY_PRESET hidden
-        VISIBILITY_INLINES_HIDDEN ON
-    )
 endfunction()
-
-# -----------------------------------------------------------------------------
-# Library targets
-# -----------------------------------------------------------------------------
-set(DSP_INSTALL_TARGETS "")
 
 if(DSP_BUILD_SHARED)
     add_library(dsp_engine SHARED ${DSP_LIB_SOURCES})
@@ -173,14 +136,16 @@ if(DSP_BUILD_SHARED)
         OUTPUT_NAME "dsp_engine"
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR}
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
-    if(UNIX AND NOT APPLE)
+    if(APPLE)
         set_target_properties(dsp_engine PROPERTIES
+            INSTALL_RPATH "@loader_path"
+            BUILD_WITH_INSTALL_RPATH TRUE
             SKIP_BUILD_RPATH FALSE
         )
     endif()
     configure_dsp_target(dsp_engine)
-    list(APPEND DSP_INSTALL_TARGETS dsp_engine)
 endif()
 
 if(DSP_BUILD_STATIC)
@@ -190,62 +155,10 @@ if(DSP_BUILD_STATIC)
         OUTPUT_NAME "dsp_engine"
     )
     configure_dsp_target(dsp_engine_static)
-    list(APPEND DSP_INSTALL_TARGETS dsp_engine_static)
-
-    if(NOT DSP_BUILD_SHARED)
-        add_library(dsp_engine ALIAS dsp_engine_static)
-    endif()
 endif()
 
-if(NOT DSP_INSTALL_TARGETS AND NOT TARGET dsp_engine)
-    message(FATAL_ERROR "At least one of DSP_BUILD_SHARED or DSP_BUILD_STATIC must be ON")
-endif()
-
-# -----------------------------------------------------------------------------
-# Installation
-# -----------------------------------------------------------------------------
-include(GNUInstallDirs)
-
-if(DSP_INSTALL_TARGETS)
-    install(TARGETS ${DSP_INSTALL_TARGETS}
-        EXPORT DSPEngineTargets
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-endif()
-
-install(EXPORT DSPEngineTargets
-    FILE DSPEngineTargets.cmake
-    NAMESPACE DSP::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/DSPEngine
-)
-
-include(CMakePackageConfigHelpers)
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/DSPEngineConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
-
-configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DSPEngineConfig.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/DSPEngineConfig.cmake"
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/DSPEngine
-)
-
-install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/DSPEngineConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/DSPEngineConfigVersion.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/DSPEngine
-)
-
-# -----------------------------------------------------------------------------
-# Examples & tests
-# -----------------------------------------------------------------------------
-if(DSP_BUILD_EXAMPLES)
-    add_subdirectory(examples)
+if(NOT TARGET dsp_engine AND TARGET dsp_engine_static)
+    add_library(dsp_engine ALIAS dsp_engine_static)
 endif()
 
 if(DSP_BUILD_TESTS)
@@ -253,19 +166,36 @@ if(DSP_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+if(DSP_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
+include(GNUInstallDirs)
+if(TARGET dsp_engine AND NOT TARGET dsp_engine_static)
+    install(TARGETS dsp_engine
+        EXPORT dsp_engine_targets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+elseif(TARGET dsp_engine_static)
+    install(TARGETS dsp_engine_static
+        EXPORT dsp_engine_targets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
 message(STATUS "")
-message(STATUS "=== DSP ENGINE ${PROJECT_VERSION} ===")
-message(STATUS "Build type          : ${CMAKE_BUILD_TYPE}")
-message(STATUS "Shared library      : ${DSP_BUILD_SHARED}")
-message(STATUS "Static library      : ${DSP_BUILD_STATIC}")
-message(STATUS "Double precision    : ${DSP_DOUBLE_PRECISION}")
-message(STATUS "Bit-perfect path    : ${DSP_BIT_PERFECT}")
-message(STATUS "SIMD                : ${DSP_ENABLE_SIMD}")
-message(STATUS "Real-time priority  : ${DSP_ENABLE_RT}")
-message(STATUS "Examples            : ${DSP_BUILD_EXAMPLES}")
-message(STATUS "Tests               : ${DSP_BUILD_TESTS}")
-message(STATUS "Backend AAudio      : ${DSP_BACKEND_AAUDIO}")
-message(STATUS "Backend WASAPI      : ${DSP_BACKEND_WASAPI}")
-message(STATUS "Backend CoreAudio   : ${DSP_BACKEND_COREAUDIO}")
+message(STATUS "========== DSP ENGINE ${PROJECT_VERSION} ==========")
+message(STATUS "Build type         : ${CMAKE_BUILD_TYPE}")
+message(STATUS "Shared / Static    : ${DSP_BUILD_SHARED} / ${DSP_BUILD_STATIC}")
+message(STATUS "Double precision   : ${DSP_USE_DOUBLE}")
+message(STATUS "SIMD               : ${DSP_ENABLE_SIMD}")
+message(STATUS "Backend AAudio     : ${DSP_BACKEND_AAUDIO}")
+message(STATUS "Backend WASAPI     : ${DSP_BACKEND_WASAPI}")
+message(STATUS "Backend CoreAudio  : ${DSP_BACKEND_COREAUDIO}")
 message(STATUS "==============================")
 message(STATUS "")
