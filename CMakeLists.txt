@@ -1,9 +1,3 @@
-# =============================================================================
-# DSP ENGINE — Highly optimized 64-bit audio processing engine
-# Features: Direct Volume Control (DVC), multi-band EQ, ultra-low latency,
-#           bit-perfect path, near-real-time priority, lock-free buffers
-# =============================================================================
-
 cmake_minimum_required(VERSION 3.16)
 
 project(DSP_ENGINE
@@ -12,9 +6,6 @@ project(DSP_ENGINE
     LANGUAGES C CXX
 )
 
-# -----------------------------------------------------------------------------
-# Options
-# -----------------------------------------------------------------------------
 option(DSP_BUILD_SHARED     "Build shared library"                  ON)
 option(DSP_BUILD_STATIC     "Build static library"                  ON)
 option(DSP_BUILD_TESTS      "Build unit tests and benchmarks"       ON)
@@ -38,11 +29,16 @@ if(APPLE)
 else()
     set(_DSP_DEFAULT_COREAUDIO OFF)
 endif()
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+    set(_DSP_DEFAULT_ALSA ON)
+else()
+    set(_DSP_DEFAULT_ALSA OFF)
+endif()
 
 option(DSP_BACKEND_AAUDIO    "Build AAudio backend (Android)"       ${_DSP_DEFAULT_AAUDIO})
 option(DSP_BACKEND_WASAPI    "Build WASAPI backend (Windows)"       ${_DSP_DEFAULT_WASAPI})
 option(DSP_BACKEND_COREAUDIO "Build Core Audio backend (Apple)"     ${_DSP_DEFAULT_COREAUDIO})
-option(DSP_BACKEND_ALSA      "Build ALSA backend (Linux) — stub"    OFF)
+option(DSP_BACKEND_ALSA      "Build ALSA backend (Linux)"           ${_DSP_DEFAULT_ALSA})
 option(DSP_BACKEND_JACK      "Build JACK backend — stub"            OFF)
 option(DSP_BACKEND_PIPEWIRE  "Build PipeWire backend — stub"        OFF)
 
@@ -57,9 +53,6 @@ endif()
 
 if(MSVC)
     set(DSP_OPT_FLAGS /O2 /fp:fast)
-    if(DSP_ENABLE_SIMD)
-        # Leave /arch to the user or default; MSVC needs explicit /arch:AVX2
-    endif()
     add_compile_definitions(_USE_MATH_DEFINES)
     add_compile_definitions(NOMINMAX)
 else()
@@ -71,30 +64,22 @@ else()
             if(HAS_AVX2)
                 list(APPEND DSP_OPT_FLAGS -mavx2 -mfma)
             endif()
-        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-            # NEON is default on aarch64
         endif()
     endif()
 endif()
 add_compile_options(${DSP_OPT_FLAGS})
 
-# -----------------------------------------------------------------------------
-# Sources
-# -----------------------------------------------------------------------------
-# Core + backends only. Offline helpers (resampler kernel builder, ring buffer,
-# standalone DVC/math utils) remain in-tree for reference but are not linked —
-# SRC lives in processor.cpp; no consumer used the ring buffer yet.
 set(DSP_LIB_SOURCES
     src/core/processor.cpp
     src/audio/backends/backend_stubs.cpp
     src/audio/backends/backend_aaudio.cpp
     src/audio/backends/backend_coreaudio.cpp
     src/audio/backends/backend_wasapi.cpp
+    src/audio/backends/backend_alsa.cpp
     src/audio/backends/backend_c_api.cpp
     src/realtime/thread_priority.cpp
 )
 
-# Helper function to configure a library target (shared or static)
 function(configure_dsp_target target_name)
     target_include_directories(${target_name}
         PUBLIC
@@ -127,6 +112,22 @@ function(configure_dsp_target target_name)
             target_link_libraries(${target_name} PRIVATE "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
         endif()
     endif()
+    if(DSP_BACKEND_ALSA)
+        find_package(ALSA QUIET)
+        if(ALSA_FOUND)
+            target_compile_definitions(${target_name} PRIVATE DSP_HAS_ALSA)
+            target_include_directories(${target_name} PRIVATE ${ALSA_INCLUDE_DIRS})
+            target_link_libraries(${target_name} PRIVATE ${ALSA_LIBRARIES})
+        else()
+            find_library(ASOUND_LIB asound)
+            if(ASOUND_LIB)
+                target_compile_definitions(${target_name} PRIVATE DSP_HAS_ALSA)
+                target_link_libraries(${target_name} PRIVATE ${ASOUND_LIB})
+            else()
+                message(WARNING "DSP_BACKEND_ALSA=ON but libasound not found; ALSA backend disabled")
+            endif()
+        endif()
+    endif()
 endfunction()
 
 if(DSP_BUILD_SHARED)
@@ -138,22 +139,13 @@ if(DSP_BUILD_SHARED)
         SOVERSION ${PROJECT_VERSION_MAJOR}
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
-    if(APPLE)
-        set_target_properties(dsp_engine PROPERTIES
-            INSTALL_RPATH "@loader_path"
-            BUILD_WITH_INSTALL_RPATH TRUE
-            SKIP_BUILD_RPATH FALSE
-        )
-    endif()
     configure_dsp_target(dsp_engine)
 endif()
 
 if(DSP_BUILD_STATIC)
     add_library(dsp_engine_static STATIC ${DSP_LIB_SOURCES})
     target_compile_definitions(dsp_engine_static PUBLIC DSP_ENGINE_STATIC)
-    set_target_properties(dsp_engine_static PROPERTIES
-        OUTPUT_NAME "dsp_engine"
-    )
+    set_target_properties(dsp_engine_static PROPERTIES OUTPUT_NAME "dsp_engine")
     configure_dsp_target(dsp_engine_static)
 endif()
 
@@ -172,19 +164,15 @@ endif()
 
 include(GNUInstallDirs)
 if(TARGET dsp_engine AND NOT TARGET dsp_engine_static)
-    install(TARGETS dsp_engine
-        EXPORT dsp_engine_targets
+    install(TARGETS dsp_engine EXPORT dsp_engine_targets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 elseif(TARGET dsp_engine_static)
-    install(TARGETS dsp_engine_static
-        EXPORT dsp_engine_targets
+    install(TARGETS dsp_engine_static EXPORT dsp_engine_targets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
@@ -197,5 +185,6 @@ message(STATUS "SIMD               : ${DSP_ENABLE_SIMD}")
 message(STATUS "Backend AAudio     : ${DSP_BACKEND_AAUDIO}")
 message(STATUS "Backend WASAPI     : ${DSP_BACKEND_WASAPI}")
 message(STATUS "Backend CoreAudio  : ${DSP_BACKEND_COREAUDIO}")
+message(STATUS "Backend ALSA       : ${DSP_BACKEND_ALSA}")
 message(STATUS "==============================")
 message(STATUS "")
