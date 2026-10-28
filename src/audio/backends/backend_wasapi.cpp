@@ -19,14 +19,12 @@
 #include <mutex>
 #include <thread>
 
-// Avoid ksmedia.h conflicts on some SDK combos
 #ifndef SPEAKER_FRONT_LEFT
 #define SPEAKER_FRONT_LEFT   0x1
 #define SPEAKER_FRONT_RIGHT  0x2
 #define SPEAKER_FRONT_CENTER 0x4
 #endif
 #ifndef KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
-// {00000003-0000-0010-8000-00aa00389b71}
 static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = {
     0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
 };
@@ -47,6 +45,8 @@ public:
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         if (FAILED(hr) && hr != RPC_E_CHANGED_MODE && hr != S_FALSE)
             return DSP_ERR_DEVICE;
+        /* S_OK = we own a COM init on this thread; S_FALSE/CHANGED_MODE = already inited. */
+        com_inited_ = (hr == S_OK);
 
         IMMDeviceEnumerator* enumerator = nullptr;
         hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
@@ -135,6 +135,10 @@ public:
         if (client_) { client_->Release(); client_ = nullptr; }
         if (event_) { CloseHandle(event_); event_ = nullptr; }
         opened_ = false;
+        if (com_inited_) {
+            CoUninitialize();
+            com_inited_ = false;
+        }
     }
 
     DspError start() override {
@@ -230,6 +234,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<int> xruns_{0};
     bool opened_ = false;
+    bool com_inited_ = false;
     int32_t rate_ = 0, ch_ = 0, frames_ = 0;
     BackendRenderFn render_fn_ = nullptr;
     void* user_ = nullptr;
