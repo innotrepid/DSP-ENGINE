@@ -1,42 +1,12 @@
 /**
- * Math helpers (SIMD-friendly where possible)
+ * Math helpers — non-inline definitions (header provides inlines for speed).
  */
-
-#include <cmath>
-#include <algorithm>
+#include "utils/math_utils.h"
 
 namespace dsp {
 
-double db_to_linear(double db)
-{
-    if (db <= -120.0) return 0.0;
-    return std::pow(10.0, db / 20.0);
-}
-
-double linear_to_db(double lin)
-{
-    if (lin <= 1e-10) return -200.0;
-    return 20.0 * std::log10(lin);
-}
-
-/** Fast approximate tanh for soft-clipping (optional future use). */
-float fast_tanh(float x)
-{
-    // Pade approximation
-    const float x2 = x * x;
-    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
-}
-
-/** Clamp utility. */
-template<typename T>
-T clamp(T v, T lo, T hi)
-{
-    return std::max(lo, std::min(v, hi));
-}
-
-// Explicit instantiations
-template float  clamp<float>(float, float, float);
-template double clamp<double>(double, double, double);
-template int    clamp<int>(int, int, int);
+double db_to_linear_export(double db) { return db_to_linear(db); }
+double linear_to_db_export(double lin) { return linear_to_db(lin); }
+float  fast_tanh_export(float x) { return fast_tanh(x); }
 
 } // namespace dsp
