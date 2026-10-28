@@ -19,14 +19,14 @@
 
 extern "C" {
 
-DSP_API bool dsp_set_realtime_priority(DspEngine* /*engine*/, int priority)
+DSP_API int dsp_set_realtime_priority(DspEngine* /*engine*/, int priority)
 {
-    if (priority <= 0) return true; // nothing to do
+    if (priority <= 0) return 1; // nothing to do
 
 #if defined(_WIN32)
     // Windows: TIME_CRITICAL is the highest
     HANDLE h = GetCurrentThread();
-    return SetThreadPriority(h, THREAD_PRIORITY_TIME_CRITICAL) != 0;
+    return SetThreadPriority(h, THREAD_PRIORITY_TIME_CRITICAL) != 0 ? 1 : 0;
 
 #elif defined(__linux__) || defined(__ANDROID__)
     // Prefer SCHED_FIFO when possible (requires CAP_SYS_NICE or root)
@@ -35,10 +35,10 @@ DSP_API bool dsp_set_realtime_priority(DspEngine* /*engine*/, int priority)
     param.sched_priority = priority > 99 ? 99 : priority;
 
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0)
-        return true;
+        return 1;
 
     // Fallback: nice value
-    return setpriority(PRIO_PROCESS, 0, -20) == 0;
+    return setpriority(PRIO_PROCESS, 0, -20) == 0 ? 1 : 0;
 
 #elif defined(__APPLE__)
     // macOS / iOS: use thread time constraint policy for real-time
@@ -54,11 +54,11 @@ DSP_API bool dsp_set_realtime_priority(DspEngine* /*engine*/, int priority)
         (thread_policy_t)&policy,
         THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 
-    return kr == KERN_SUCCESS;
+    return kr == KERN_SUCCESS ? 1 : 0;
 
 #else
     (void)priority;
-    return false; // unsupported platform
+    return 0; // unsupported platform
 #endif
 }
 
