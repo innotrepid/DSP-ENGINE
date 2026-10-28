@@ -144,7 +144,9 @@ DSP_API DspError dsp_limiter_set_threshold(DspEngine* eng, float threshold_db);
 DSP_API DspError dsp_limiter_set_release(DspEngine* eng, float release_ms);
 
 /* -------------------------------------------------------------------------- */
-/* Dither                                                                     */
+/* Dither (16-bit quantize + noise)                                           */
+/* TPDF / SHAPED add noise then quantize to 16-bit PCM levels (re-normalized  */
+/* to float). Use before writing integer PCM or as a final float stage.       */
 /* -------------------------------------------------------------------------- */
 
 DSP_API DspError dsp_dither_enable(DspEngine* eng, int enable);
@@ -166,6 +168,9 @@ DSP_API int dsp_set_realtime_priority(DspEngine* eng, int priority);
 
 /* -------------------------------------------------------------------------- */
 /* Backend (optional platform audio output)                                   */
+/* AAudio (Android), WASAPI (Windows), Core Audio (Apple). On Linux and other */
+/* hosts without a native backend, dsp_backend_create() yields a null device: */
+/* open() may succeed, but start() returns DSP_ERR_UNSUPPORTED (no audio).    */
 /* -------------------------------------------------------------------------- */
 
 typedef struct DspBackend DspBackend;
