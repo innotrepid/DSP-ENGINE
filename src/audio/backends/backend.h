@@ -40,7 +40,7 @@ public:
 };
 
 /**
- * Null backend — no device I/O (offline / unit tests / Linux without ALSA).
+ * Null backend — no device I/O (offline / unit tests / hosts without a driver).
  * open() succeeds for lifecycle tests; start() returns DSP_ERR_UNSUPPORTED
  * so callers never believe audio is playing.
  */
@@ -54,7 +54,6 @@ public:
     void close() override { opened_ = false; running_ = false; }
     DspError start() override {
         (void)opened_;
-        /* Intentionally no audio thread / device. */
         return DSP_ERR_UNSUPPORTED;
     }
     DspError stop() override { running_ = false; return DSP_OK; }
@@ -75,10 +74,10 @@ private:
     void* user_ = nullptr;
 };
 
-/** Factories: heap-allocated backend, or nullptr if unavailable on this platform. */
 IAudioBackend* create_aaudio_backend();
 IAudioBackend* create_wasapi_backend();
 IAudioBackend* create_coreaudio_backend();
-IAudioBackend* create_default_backend(); // best available for the platform
+IAudioBackend* create_alsa_backend();
+IAudioBackend* create_default_backend();
 
 } // namespace dsp

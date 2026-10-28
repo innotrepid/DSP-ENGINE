@@ -9,9 +9,12 @@ target_include_directories(unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(unit_tests PRIVATE dsp_engine)
+# Tests use C++ exceptions for assertions; engine is built with -fno-exceptions.
+if(NOT MSVC)
+    target_compile_options(unit_tests PRIVATE -fexceptions -frtti)
+endif()
 
 # On Windows the shared DLL must sit next to the exe or PATH must include it.
-# Copying avoids a silent "DLL not found" hang/dialog under ctest on CI.
 if(WIN32 AND TARGET dsp_engine)
     add_custom_command(TARGET unit_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
