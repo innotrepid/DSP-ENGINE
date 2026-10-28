@@ -98,16 +98,20 @@ DSP_API DspError   dsp_set_channels(DspEngine* eng, int channels);
 /* Processing                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** Process interleaved float32 in-place style: in -> out, frames samples per channel. */
+/** Process interleaved float32: in -> out, frames samples per channel. */
 DSP_API DspError dsp_process(DspEngine* eng,
                              const float* in,
                              float* out,
                              int frames);
 
 /**
- * Sample-rate conversion + process.
- * ratio = input_rate / output_rate (e.g. 1.5 upsamples by 1.5x).
- * *out_frames is capacity on input, actual frames written on output.
+ * Sample-rate conversion followed by the full DSP pipeline
+ * (EQ → DVC → limiter → dither).
+ *
+ * ratio ≈ source_rate / destination_rate (phase advance per output frame):
+ *   - ratio < 1 → upsample  (e.g. 0.5 ≈ 2×)
+ *   - ratio > 1 → downsample (e.g. 2.0 ≈ ½×)
+ * *out_frames is capacity on entry, frames written on return.
  */
 DSP_API DspError dsp_process_src(DspEngine* eng,
                                  const float* in, int in_frames,
@@ -145,6 +149,20 @@ DSP_API DspError dsp_limiter_set_release(DspEngine* eng, float release_ms);
 
 DSP_API DspError dsp_dither_enable(DspEngine* eng, int enable);
 DSP_API DspError dsp_dither_set_mode(DspEngine* eng, DspDitherMode mode);
+
+/* -------------------------------------------------------------------------- */
+/* Real-time scheduling                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Raise the calling thread toward real-time priority.
+ * priority <= 0: no-op (returns 1).
+ * priority > 0: platform-specific (Windows TIME_CRITICAL, Linux SCHED_FIFO/nice,
+ *               Apple time-constraint policy).
+ * Returns 1 on success, 0 on failure / unsupported.
+ * The engine pointer is reserved for future per-engine affinity; may be NULL.
+ */
+DSP_API int dsp_set_realtime_priority(DspEngine* eng, int priority);
 
 /* -------------------------------------------------------------------------- */
 /* Backend (optional platform audio output)                                   */
