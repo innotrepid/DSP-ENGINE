@@ -100,6 +100,9 @@ TEST(limiter) {
 
 TEST(dither) {
     DspEngine* eng = create_engine();
+    dsp_eq_enable(eng, 0);
+    dsp_limiter_enable(eng, 0);
+    dsp_dvc_set_gain_db(eng, 0.f);
     EXPECT_EQ(dsp_dither_enable(eng, 1), DSP_OK);
     EXPECT_EQ(dsp_dither_set_mode(eng, DSP_DITHER_TPDF), DSP_OK);
 
@@ -108,6 +111,8 @@ TEST(dither) {
     std::vector<float> out(frames * 2);
     EXPECT_EQ(dsp_process(eng, in.data(), out.data(), frames), DSP_OK);
     EXPECT_TRUE(std::isfinite(out[0]));
+    /* 16-bit quantize: |out - 0.25| should be within ~2 LSB */
+    EXPECT_NEAR(out[0], 0.25f, 3.0f / 32768.f);
     dsp_destroy(eng);
 }
 
@@ -134,7 +139,6 @@ TEST(src_cubic) {
 }
 
 TEST(src_pipeline) {
-    /* SRC must apply DVC after resampling (full pipeline). */
     DspEngine* eng = create_engine();
     dsp_eq_enable(eng, 0);
     dsp_limiter_enable(eng, 0);
