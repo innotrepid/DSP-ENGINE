@@ -3,84 +3,106 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'dsp_engine_bindings.dart';
-import 'dsp_config.dart';
 import 'dsp_exception.dart';
 
-/// High-level Dart wrapper around the native DSP ENGINE.
+/// High-level wrapper around the DSP ENGINE C ABI.
 class DspEngine {
-  final Pointer<Void> _handle;
+  DspEngine._(this._b, this._handle);
+
   final DspEngineBindings _b;
+  final Pointer<Void> _handle;
+  bool _disposed = false;
 
-  DspEngine._(this._handle, this._b);
-
-  /// Create a new engine instance.
+  /// Open the native library and create an engine.
   static DspEngine create({
     double sampleRate = 48000,
     int channels = 2,
     int maxBlock = 1024,
-    bool enableEq = true,
+    bool enableEq = false,
     bool enableDvc = true,
     bool enableLimiter = false,
     bool enableDither = false,
-    DitherMode ditherMode = DitherMode.tpdf,
+    DitherMode ditherMode = DitherMode.none,
     double limiterThresholdDb = -1.0,
     double limiterReleaseMs = 50.0,
+    DynamicLibrary? lib,
   }) {
-    final b = DspEngineBindings();
+    final b = DspEngineBindings(lib ?? DspEngineBindings.openLib());
     final cfg = calloc<DspConfigNative>();
-    cfg.ref.sampleRate = sampleRate;
-    cfg.ref.channels = channels;
-    cfg.ref.maxBlock = maxBlock;
-    cfg.ref.enableEq = enableEq ? 1 : 0;
-    cfg.ref.enableDvc = enableDvc ? 1 : 0;
-    cfg.ref.enableLimiter = enableLimiter ? 1 : 0;
-    cfg.ref.enableDither = enableDither ? 1 : 0;
-    cfg.ref.ditherMode = ditherMode.index;
-    cfg.ref.limiterThresholdDb = limiterThresholdDb;
-    cfg.ref.limiterReleaseMs = limiterReleaseMs;
-
+    cfg.ref
+      ..sample_rate = sampleRate
+      ..channels = channels
+      ..max_block = maxBlock
+      ..enable_eq = enableEq ? 1 : 0
+      ..enable_dvc = enableDvc ? 1 : 0
+      ..enable_limiter = enableLimiter ? 1 : 0
+      ..enable_dither = enableDither ? 1 : 0
+      ..dither_mode = ditherMode.index
+      ..limiter_threshold_db = limiterThresholdDb
+      ..limiter_release_ms = limiterReleaseMs;
     final h = b.dsp_create(cfg);
     calloc.free(cfg);
     if (h == nullptr) {
       throw DspException('dsp_create failed');
     }
-    return DspEngine._(h, b);
+    return DspEngine._(b, h);
   }
 
-  static String get version {
-    final b = DspEngineBindings();
-    final p = b.dsp_version();
-    return p.toDartString();
-  }
-
-  void dispose() {
-    _b.dsp_destroy(_handle);
+  String get version {
+    final p = _b.dsp_version();
+    return p == nullptr ? '' : p.toDartString();
   }
 
   void reset() => _check(_b.dsp_reset(_handle));
 
-  void setSampleRate(double rate) =>
-      _check(_b.dsp_set_sample_rate(_handle, rate));
+  void setSampleRate(double rate) => _check(_b.dsp_set_sample_rate(_handle, rate));
 
-  void setChannels(int ch) => _check(_b.dsp_set_channels(_handle, ch));
+  void setChannels(int channels) => _check(_b.dsp_set_channels(_handle, channels));
 
-  /// Process interleaved float32 samples.
-  void process(Float32List input, Float32List output) {
-    if (input.length != output.length) {
-      throw ArgumentError('input/output length mismatch');
-    }
-    final frames = input.length ~/ 2; // assume stereo for simplicity; real code uses channels
+  /// Process [frames] interleaved frames from [input] into [output].
+  void processFrames(Float32List input, Float32List output, int frames) {
+    _ensure();
     final inPtr = calloc<Float>(input.length);
     final outPtr = calloc<Float>(output.length);
-    for (var i = 0; i < input.length; i++) inPtr[i] = input[i];
+    inPtr.asTypedList(input.length).setAll(0, input);
     _check(_b.dsp_process(_handle, inPtr, outPtr, frames));
-    for (var i = 0; i < output.length; i++) output[i] = outPtr[i];
+    output.setAll(0, outPtr.asTypedList(output.length));
     calloc.free(inPtr);
     calloc.free(outPtr);
   }
 
-  void setEqEnabled(bool enable) =>
-      _check(_b.dsp_eq_enable(_handle, enable ? 1 : 0));
+  /// Resample then run the full DSP pipeline (EQ → DVC → limiter → dither).
+  ///
+  /// [ratio] ≈ sourceRate / destRate (`< 1` upsamples, `> 1` downsamples).
+  /// [output] must hold at least [maxOutFrames] * channels interleaved samples.
+  /// Returns frames written.
+  int processSrc(
+    Float32List input,
+    int inFrames,
+    Float32List output,
+    int maxOutFrames, {
+    required int channels,
+    required double ratio,
+    SrcQuality quality = SrcQuality.cubic,
+  }) {
+    _ensure();
+    final inPtr = calloc<Float>(input.length);
+    final outPtr = calloc<Float>(output.length);
+    final outFrames = calloc<Int32>();
+    outFrames.value = maxOutFrames;
+    inPtr.asTypedList(input.length).setAll(0, input);
+    _check(_b.dsp_process_src(
+        _handle, inPtr, inFrames, outPtr, outFrames, ratio, quality.index));
+    final written = outFrames.value;
+    final n = (written * channels).clamp(0, output.length);
+    output.setAll(0, outPtr.asTypedList(n));
+    calloc.free(inPtr);
+    calloc.free(outPtr);
+    calloc.free(outFrames);
+    return written;
+  }
+
+  void setEqEnabled(bool enable) => _check(_b.dsp_eq_enable(_handle, enable ? 1 : 0));
 
   void setEqBands(List<EqBand> bands) {
     if (bands.isEmpty) {
@@ -89,27 +111,42 @@ class DspEngine {
     }
     final ptr = calloc<DspEqBandNative>(bands.length);
     for (var i = 0; i < bands.length; i++) {
-      ptr[i].freqHz = bands[i].freqHz;
-      ptr[i].gainDb = bands[i].gainDb;
-      ptr[i].q = bands[i].q;
-      ptr[i].type = bands[i].type.index;
+      ptr[i]
+        ..freq_hz = bands[i].freqHz
+        ..gain_db = bands[i].gainDb
+        ..q = bands[i].q
+        ..type = bands[i].type.index;
     }
     _check(_b.dsp_eq_set_bands(_handle, ptr, bands.length));
     calloc.free(ptr);
   }
 
-  void setDvcGainDb(double db) =>
-      _check(_b.dsp_dvc_set_gain_db(_handle, db));
+  void setEqBand(int index, EqBand band) {
+    final ptr = calloc<DspEqBandNative>();
+    ptr.ref
+      ..freq_hz = band.freqHz
+      ..gain_db = band.gainDb
+      ..q = band.q
+      ..type = band.type.index;
+    _check(_b.dsp_eq_set_band(_handle, index, ptr));
+    calloc.free(ptr);
+  }
+
+  int get eqBandCount => _b.dsp_eq_band_count(_handle);
+
+  void setDvcGainDb(double db) => _check(_b.dsp_dvc_set_gain_db(_handle, db));
 
   double get dvcGainDb => _b.dsp_dvc_get_gain_db(_handle);
+
+  void setDvcEnabled(bool enable) => _check(_b.dsp_dvc_enable(_handle, enable ? 1 : 0));
 
   void setLimiterEnabled(bool enable) =>
       _check(_b.dsp_limiter_enable(_handle, enable ? 1 : 0));
 
-  void setLimiterThreshold(double db) =>
+  void setLimiterThresholdDb(double db) =>
       _check(_b.dsp_limiter_set_threshold(_handle, db));
 
-  void setLimiterRelease(double ms) =>
+  void setLimiterReleaseMs(double ms) =>
       _check(_b.dsp_limiter_set_release(_handle, ms));
 
   void setDitherEnabled(bool enable) =>
@@ -118,12 +155,100 @@ class DspEngine {
   void setDitherMode(DitherMode mode) =>
       _check(_b.dsp_dither_set_mode(_handle, mode.index));
 
+  /// Raise the current thread toward real-time priority. Returns true on success.
+  bool setRealtimePriority(int priority) =>
+      _b.dsp_set_realtime_priority(_handle, priority) != 0;
+
+  void dispose() {
+    if (_disposed) return;
+    _b.dsp_destroy(_handle);
+    _disposed = true;
+  }
+
+  void _ensure() {
+    if (_disposed) throw StateError('DspEngine disposed');
+  }
+
   void _check(int code) {
     if (code != 0) throw DspException('DSP error $code');
   }
 }
 
+/// Platform audio output backend (AAudio / WASAPI / Core Audio / null).
+class DspBackend {
+  DspBackend._(this._b, this._handle);
+
+  final DspEngineBindings _b;
+  final Pointer<Void> _handle;
+  bool _disposed = false;
+
+  static DspBackend create({DynamicLibrary? lib}) {
+    final b = DspEngineBindings(lib ?? DspEngineBindings.openLib());
+    final h = b.dsp_backend_create();
+    if (h == nullptr) throw DspException('dsp_backend_create failed');
+    return DspBackend._(b, h);
+  }
+
+  void open({
+    int sampleRate = 48000,
+    int channels = 2,
+    int bufferFrames = 256,
+    bool exclusive = true,
+    int deviceId = 0,
+  }) {
+    _ensure();
+    final cfg = calloc<DspBackendConfigNative>();
+    cfg.ref
+      ..sample_rate = sampleRate
+      ..channels = channels
+      ..buffer_frames = bufferFrames
+      ..exclusive = exclusive ? 1 : 0
+      ..device_id = deviceId;
+    final err = _b.dsp_backend_open(_handle, cfg);
+    calloc.free(cfg);
+    _check(err);
+  }
+
+  void close() {
+    if (!_disposed) _b.dsp_backend_close(_handle);
+  }
+
+  /// Start with a native function pointer (e.g. [NativeCallable]).
+  void startNative(
+    Pointer<NativeFunction<Void Function(Pointer<Void>, Pointer<Float>, Int32)>> cb,
+    Pointer<Void> user,
+  ) {
+    _ensure();
+    _check(_b.dsp_backend_start(_handle, cb, user));
+  }
+
+  void stop() => _check(_b.dsp_backend_stop(_handle));
+
+  bool get isRunning => _b.dsp_backend_is_running(_handle) != 0;
+  int get xrunCount => _b.dsp_backend_xrun_count(_handle);
+  int get actualRate => _b.dsp_backend_actual_rate(_handle);
+  int get actualChannels => _b.dsp_backend_actual_channels(_handle);
+  int get actualBufferFrames => _b.dsp_backend_actual_buffer_frames(_handle);
+
+  void dispose() {
+    if (_disposed) return;
+    _b.dsp_backend_close(_handle);
+    _b.dsp_backend_destroy(_handle);
+    _disposed = true;
+  }
+
+  void _ensure() {
+    if (_disposed) throw StateError('DspBackend disposed');
+  }
+
+  void _check(int code) {
+    if (code != 0) throw DspException('DSP backend error $code');
+  }
+}
+
 enum DitherMode { none, tpdf, shaped }
+
+enum SrcQuality { none, linear, cubic, hq }
 
 enum EqType { peak, lowShelf, highShelf, lowPass, highPass }
 
