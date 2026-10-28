@@ -4,6 +4,9 @@
 
 #include "test_framework.h"
 #include "dsp_engine.h"
+#include "audio/ring_buffer.h"
+#include "utils/math_utils.h"
+#include "core/resampler.h"
 #include <vector>
 #include <cmath>
 #include <cstring>
@@ -173,6 +176,34 @@ TEST(dither_getters) {
     EXPECT_EQ(dsp_dither_get_mode(eng), DSP_DITHER_SHAPED);
     EXPECT_EQ(dsp_dither_is_enabled(eng), 1);
     dsp_destroy(eng);
+}
+
+TEST(math_db) {
+    EXPECT_NEAR(dsp::db_to_linear(0.0), 1.0, 1e-9);
+    EXPECT_NEAR(dsp::db_to_linear(-6.0), 0.501187, 1e-4);
+    EXPECT_NEAR(dsp::linear_to_db(1.0), 0.0, 1e-6);
+}
+
+TEST(ring_buffer_spsc) {
+    dsp::RingBuffer rb(64, 2);
+    float in[32];
+    for (int i = 0; i < 32; ++i) in[i] = float(i);
+    EXPECT_EQ(rb.write(in, 16), 16u);
+    float out[32] = {};
+    EXPECT_EQ(rb.read(out, 16), 16u);
+    for (int i = 0; i < 32; ++i) EXPECT_NEAR(out[i], float(i), 1e-6);
+    EXPECT_EQ(rb.available_read(), 0u);
+}
+
+TEST(resampler_module) {
+    dsp::ResamplerState st;
+    float in[8];
+    for (int i = 0; i < 8; ++i) in[i] = 0.5f;
+    float out[16];
+    int out_frames = 8;
+    EXPECT_EQ(dsp::resample_interleaved(st, in, 4, out, &out_frames, 2, 1.0f, DSP_SRC_LINEAR), DSP_OK);
+    EXPECT_GT(out_frames, 0);
+    EXPECT_NEAR(out[0], 0.5f, 1e-5);
 }
 
 TEST(backend_create) {
