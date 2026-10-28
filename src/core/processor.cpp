@@ -266,17 +266,32 @@ static void process_block(DspEngine* eng, sample_t* interleaved, int frames) {
     }
 
     if (eng->dither_enabled && eng->dither_mode != DSP_DITHER_NONE) {
+        /* 16-bit quantize with TPDF (or light error feedback for SHAPED). */
+        constexpr float kScale = 32768.f;
+        constexpr float kInv   = 1.f / 32768.f;
         for (int c = 0; c < ch; ++c) {
             uint32_t s = eng->dither_state[c];
+            float err = 0.f;
             for (int i = 0; i < frames; ++i) {
                 s ^= s << 13; s ^= s >> 17; s ^= s << 5;
                 float r1 = (s & 0xFFFFFF) / float(0x1000000) - 0.5f;
                 s ^= s << 13; s ^= s >> 17; s ^= s << 5;
                 float r2 = (s & 0xFFFFFF) / float(0x1000000) - 0.5f;
-                float dither = (eng->dither_mode == DSP_DITHER_SHAPED)
-                    ? (r1 * 0.5f + r2 * 0.25f) * (1.0f / 32768.f)
-                    : (r1 + r2) * (1.0f / 65536.f);
-                eng->temp[c][i] += static_cast<sample_t>(dither);
+                float noise = r1 + r2;
+
+                float x = static_cast<float>(eng->temp[c][i]);
+                if (eng->dither_mode == DSP_DITHER_SHAPED)
+                    x += err;
+
+                float scaled = x * kScale + noise;
+                float q = std::floor(scaled + 0.5f);
+                if (q >  32767.f) q =  32767.f;
+                if (q < -32768.f) q = -32768.f;
+
+                if (eng->dither_mode == DSP_DITHER_SHAPED)
+                    err = (scaled - q) * 0.5f;
+
+                eng->temp[c][i] = static_cast<sample_t>(q * kInv);
             }
             eng->dither_state[c] = s;
         }
