@@ -80,14 +80,12 @@ TEST(limiter) {
     DspEngine* eng = create_engine();
     EXPECT_EQ(dsp_limiter_enable(eng, 1), DSP_OK);
     EXPECT_EQ(dsp_limiter_set_threshold(eng, -6.0f), DSP_OK);
-    /* Disable EQ/DVC so only the limiter shapes the signal. */
     dsp_eq_enable(eng, 0);
     dsp_dvc_set_gain_db(eng, 0.f);
 
     const int frames = 1024;
     std::vector<float> in(frames * 2, 0.9f);
     std::vector<float> out(frames * 2);
-    /* Warm-up so attack settles; measure steady-state peak. */
     EXPECT_EQ(dsp_process(eng, in.data(), out.data(), frames), DSP_OK);
     EXPECT_EQ(dsp_process(eng, in.data(), out.data(), frames), DSP_OK);
 
@@ -96,7 +94,6 @@ TEST(limiter) {
         float a = std::fabs(s);
         if (a > peak) peak = a;
     }
-    /* -6 dB ≈ 0.501 linear; allow headroom for true-peak soft knee. */
     EXPECT_LT(peak, 0.65f);
     dsp_destroy(eng);
 }
@@ -136,8 +133,26 @@ TEST(src_cubic) {
     dsp_destroy(eng);
 }
 
+TEST(src_pipeline) {
+    /* SRC must apply DVC after resampling (full pipeline). */
+    DspEngine* eng = create_engine();
+    dsp_eq_enable(eng, 0);
+    dsp_limiter_enable(eng, 0);
+    dsp_dither_enable(eng, 0);
+    dsp_dvc_enable(eng, 1);
+    EXPECT_EQ(dsp_dvc_set_gain_db(eng, -6.0f), DSP_OK);
+
+    const int in_frames = 64;
+    std::vector<float> in(in_frames * 2, 0.5f);
+    std::vector<float> out(128 * 2);
+    int out_frames = 128;
+    EXPECT_EQ(dsp_process_src(eng, in.data(), in_frames, out.data(), &out_frames, 1.0f, DSP_SRC_LINEAR), DSP_OK);
+    EXPECT_GT(out_frames, 0);
+    EXPECT_NEAR(out[0], 0.5f * 0.501187f, 0.02f);
+    dsp_destroy(eng);
+}
+
 TEST(backend_create) {
-    /* Create/destroy only — never open/start real devices in unit tests. */
     DspBackend* be = dsp_backend_create();
     if (be)
         dsp_backend_destroy(be);
