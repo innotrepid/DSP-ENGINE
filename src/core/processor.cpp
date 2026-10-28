@@ -7,16 +7,15 @@
 
 #include "dsp_engine.h"
 #include "core/eq_biquad.h"
+#include "core/dvc.h"
+#include "core/resampler.h"
+#include "utils/math_utils.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <new>
 #include <vector>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 #ifdef DSP_USE_DOUBLE
 using sample_t = double;
@@ -29,24 +28,6 @@ namespace {
 constexpr int kMaxChannels = 8;
 constexpr int kMaxEqBands  = 16;
 constexpr int kMaxBlock    = 8192;
-constexpr int kSincHalf    = 16;
-
-inline sample_t db_to_lin(float db) {
-    return static_cast<sample_t>(std::pow(10.0, static_cast<double>(db) / 20.0));
-}
-
-inline float sinc_weight(float x) {
-    if (x == 0.f) return 1.f;
-    const float pix = static_cast<float>(M_PI) * x;
-    float s = std::sin(pix) / pix;
-    if (x > -kSincHalf && x < kSincHalf) {
-        float w = 0.5f + 0.5f * std::cos(static_cast<float>(M_PI) * x / kSincHalf);
-        s *= w;
-    } else {
-        s = 0.f;
-    }
-    return s;
-}
 
 } // anonymous
 
@@ -56,7 +37,6 @@ struct DspEngine {
     int   max_block   = 1024;
 
     bool eq_enabled      = false;
-    bool dvc_enabled     = true;
     bool limiter_enabled = false;
     bool dither_enabled  = false;
 
@@ -68,8 +48,8 @@ struct DspEngine {
     int eq_band_count = 0;
     DspEqBand eq_bands[kMaxEqBands]{};
 
-    float    dvc_gain_db  = 0.f;
-    sample_t dvc_gain_lin = sample_t(1);
+    dsp::Dvc dvc;
+    dsp::ResamplerState src;
 
     sample_t lim_env[kMaxChannels]{};
     sample_t lim_gain[kMaxChannels]{};
@@ -84,8 +64,6 @@ struct DspEngine {
 
     double* eq_ptrs[kMaxChannels]{};
 
-    float src_phase = 0.f;
-
     DspEngine() {
         for (int c = 0; c < kMaxChannels; ++c) {
             lim_gain[c] = sample_t(1);
@@ -98,7 +76,7 @@ struct DspEngine {
     void update_limiter_coeffs() {
         lim_attack  = static_cast<sample_t>(1.0 - std::exp(-1.0 / (0.001 * sample_rate)));
         lim_release = static_cast<sample_t>(1.0 - std::exp(-1.0 / ((limiter_release_ms * 0.001) * sample_rate)));
-        lim_thresh  = db_to_lin(limiter_threshold_db);
+        lim_thresh  = static_cast<sample_t>(dsp::db_to_linear(limiter_threshold_db));
     }
 
     void rebuild_eq() {
@@ -126,7 +104,7 @@ DspEngine* dsp_create(const DspConfig* cfg) {
     eng->channels    = cfg->channels;
     eng->max_block   = cfg->max_block;
     eng->eq_enabled      = cfg->enable_eq != 0;
-    eng->dvc_enabled     = cfg->enable_dvc != 0;
+    eng->dvc.set_enabled(cfg->enable_dvc != 0);
     eng->limiter_enabled = cfg->enable_limiter != 0;
     eng->dither_enabled  = cfg->enable_dither != 0;
     eng->dither_mode     = cfg->dither_mode;
@@ -147,7 +125,8 @@ DspError dsp_reset(DspEngine* eng) {
         eng->lim_env[c] = sample_t(0);
         eng->lim_gain[c] = sample_t(1);
     }
-    eng->src_phase = 0.f;
+    eng->src.reset();
+    eng->dvc.reset();
     return DSP_OK;
 }
 
@@ -207,10 +186,11 @@ static void process_block(DspEngine* eng, sample_t* interleaved, int frames) {
     }
 #endif
 
-    if (eng->dvc_enabled && eng->dvc_gain_lin != sample_t(1)) {
-        const sample_t g = eng->dvc_gain_lin;
+    if (eng->dvc.enabled()) {
+        sample_t* ptrs[kMaxChannels];
         for (int c = 0; c < ch; ++c)
-            for (int i = 0; i < frames; ++i) eng->temp[c][i] *= g;
+            ptrs[c] = eng->temp[c];
+        eng->dvc.process_planar(ptrs, frames, ch);
     }
 
     if (eng->limiter_enabled) {
@@ -289,50 +269,13 @@ DspError dsp_process_src(DspEngine* eng, const float* in, int in_frames,
                          float* out, int* out_frames, float ratio, DspSrcQuality quality) {
     if (!eng || !in || !out || !out_frames || in_frames < 1 || ratio <= 0.f)
         return DSP_ERR_INVALID_ARG;
+
     const int ch = eng->channels;
-    int max_out = *out_frames;
-    if (max_out < 1) return DSP_ERR_INVALID_ARG;
-    float phase = eng->src_phase;
-    int written = 0;
-    auto sample_at = [&](int idx, int c) -> float {
-        if (idx < 0 || idx >= in_frames) return 0.f;
-        return in[idx * ch + c];
-    };
-    while (written < max_out) {
-        int i0 = static_cast<int>(phase);
-        float frac = phase - static_cast<float>(i0);
-        if (i0 >= in_frames - 1 && quality != DSP_SRC_HQ) break;
-        if (i0 >= in_frames) break;
-        for (int c = 0; c < ch; ++c) {
-            float y;
-            if (quality == DSP_SRC_HQ) {
-                float sum = 0.f, wsum = 0.f;
-                for (int k = -kSincHalf; k <= kSincHalf; ++k) {
-                    float w = sinc_weight(static_cast<float>(k) - frac);
-                    sum += w * sample_at(i0 + k, c);
-                    wsum += w;
-                }
-                y = (wsum != 0.f) ? (sum / wsum) : sample_at(i0, c);
-            } else if (quality == DSP_SRC_CUBIC) {
-                float y0 = sample_at(i0 - 1, c), y1 = sample_at(i0, c);
-                float y2 = sample_at(i0 + 1, c), y3 = sample_at(i0 + 2, c);
-                float a0 = -0.5f * y0 + 1.5f * y1 - 1.5f * y2 + 0.5f * y3;
-                float a1 = y0 - 2.5f * y1 + 2.f * y2 - 0.5f * y3;
-                float a2 = -0.5f * y0 + 0.5f * y2;
-                y = ((a0 * frac + a1) * frac + a2) * frac + y1;
-            } else if (quality == DSP_SRC_LINEAR) {
-                float y1 = sample_at(i0, c), y2 = sample_at(i0 + 1, c);
-                y = y1 + frac * (y2 - y1);
-            } else {
-                y = sample_at(i0, c);
-            }
-            out[written * ch + c] = y;
-        }
-        ++written;
-        phase += ratio;
-    }
-    if (phase >= static_cast<float>(in_frames)) eng->src_phase = 0.f;
-    else eng->src_phase = phase - static_cast<float>(static_cast<int>(phase));
+    DspError err = dsp::resample_interleaved(
+        eng->src, in, in_frames, out, out_frames, ch, ratio, quality);
+    if (err != DSP_OK) return err;
+
+    const int written = *out_frames;
     int done = 0;
     while (done < written) {
         int n = written - done;
@@ -345,7 +288,6 @@ DspError dsp_process_src(DspEngine* eng, const float* in, int in_frames,
             out[done * ch + i] = static_cast<float>(eng->work[i]);
         done += n;
     }
-    *out_frames = written;
     return DSP_OK;
 }
 
@@ -378,16 +320,17 @@ int dsp_eq_band_count(const DspEngine* eng) { return eng ? eng->eq_band_count : 
 
 DspError dsp_dvc_set_gain_db(DspEngine* eng, float gain_db) {
     if (!eng) return DSP_ERR_INVALID_ARG;
-    eng->dvc_gain_db = gain_db;
-    eng->dvc_gain_lin = db_to_lin(gain_db);
+    eng->dvc.set_gain_db(gain_db);
     return DSP_OK;
 }
 
-float dsp_dvc_get_gain_db(const DspEngine* eng) { return eng ? eng->dvc_gain_db : 0.f; }
+float dsp_dvc_get_gain_db(const DspEngine* eng) {
+    return eng ? eng->dvc.gain_db() : 0.f;
+}
 
 DspError dsp_dvc_enable(DspEngine* eng, int enable) {
     if (!eng) return DSP_ERR_INVALID_ARG;
-    eng->dvc_enabled = enable != 0;
+    eng->dvc.set_enabled(enable != 0);
     return DSP_OK;
 }
 
