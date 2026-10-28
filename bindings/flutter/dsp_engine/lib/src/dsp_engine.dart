@@ -149,11 +149,23 @@ class DspEngine {
   void setLimiterReleaseMs(double ms) =>
       _check(_b.dsp_limiter_set_release(_handle, ms));
 
+  double get limiterThresholdDb => _b.dsp_limiter_get_threshold(_handle);
+  double get limiterReleaseMs => _b.dsp_limiter_get_release(_handle);
+  bool get limiterEnabled => _b.dsp_limiter_is_enabled(_handle) != 0;
+
   void setDitherEnabled(bool enable) =>
       _check(_b.dsp_dither_enable(_handle, enable ? 1 : 0));
 
   void setDitherMode(DitherMode mode) =>
       _check(_b.dsp_dither_set_mode(_handle, mode.index));
+
+  DitherMode get ditherMode {
+    final i = _b.dsp_dither_get_mode(_handle);
+    if (i < 0 || i >= DitherMode.values.length) return DitherMode.none;
+    return DitherMode.values[i];
+  }
+
+  bool get ditherEnabled => _b.dsp_dither_is_enabled(_handle) != 0;
 
   /// Raise the current thread toward real-time priority. Returns true on success.
   bool setRealtimePriority(int priority) =>
@@ -174,13 +186,14 @@ class DspEngine {
   }
 }
 
-/// Platform audio output backend (AAudio / WASAPI / Core Audio / null).
+/// Platform audio output backend (AAudio / WASAPI / Core Audio / ALSA / null).
 class DspBackend {
   DspBackend._(this._b, this._handle);
 
   final DspEngineBindings _b;
   final Pointer<Void> _handle;
   bool _disposed = false;
+  NativeCallable<Void Function(Pointer<Void>, Pointer<Float>, Int32)>? _renderCallable;
 
   static DspBackend create({DynamicLibrary? lib}) {
     final b = DspEngineBindings(lib ?? DspEngineBindings.openLib());
@@ -213,7 +226,21 @@ class DspBackend {
     if (!_disposed) _b.dsp_backend_close(_handle);
   }
 
-  /// Start with a native function pointer (e.g. [NativeCallable]).
+  /// Start playback. [onRender] receives interleaved floats on the audio thread.
+  /// Keep it realtime-safe (no Dart heap alloc / locks / async).
+  void start(void Function(Pointer<Float> out, int frames) onRender) {
+    _ensure();
+    _renderCallable?.close();
+    _renderCallable =
+        NativeCallable<Void Function(Pointer<Void>, Pointer<Float>, Int32)>.listener(
+      (Pointer<Void> user, Pointer<Float> out, int frames) {
+        onRender(out, frames);
+      },
+    );
+    _check(_b.dsp_backend_start(_handle, _renderCallable!.nativeFunction, nullptr));
+  }
+
+  /// Start with a raw native function pointer.
   void startNative(
     Pointer<NativeFunction<Void Function(Pointer<Void>, Pointer<Float>, Int32)>> cb,
     Pointer<Void> user,
@@ -232,6 +259,11 @@ class DspBackend {
 
   void dispose() {
     if (_disposed) return;
+    try {
+      stop();
+    } catch (_) {}
+    _renderCallable?.close();
+    _renderCallable = null;
     _b.dsp_backend_close(_handle);
     _b.dsp_backend_destroy(_handle);
     _disposed = true;
