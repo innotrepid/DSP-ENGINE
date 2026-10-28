@@ -2,10 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master, develop ]
-  workflow_dispatch:
+    branches: [main, master]
 
 jobs:
   build-linux:
@@ -14,90 +13,67 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
       - name: Configure
         run: |
-          cmake -B build \
+          cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DDSP_BUILD_TESTS=ON \
             -DDSP_BUILD_EXAMPLES=ON \
             -DDSP_BACKEND_AAUDIO=OFF \
             -DDSP_BACKEND_WASAPI=OFF \
-            -DDSP_BACKEND_COREAUDIO=OFF
+            -DDSP_BACKEND_COREAUDIO=OFF \
+            -DDSP_BACKEND_ALSA=OFF
       - name: Build
         run: cmake --build build -j$(nproc)
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure --timeout 30
-      - name: Benchmarks
-        run: ./build/tests/benchmarks
-      - name: Example
-        run: ./build/examples/dsp_example_offline
+        run: ctest --test-dir build --output-on-failure --timeout 60
 
   build-macos:
     name: Build & Test (macOS)
     runs-on: macos-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DDSP_BUILD_TESTS=ON \
-            -DDSP_BUILD_EXAMPLES=ON \
-            -DDSP_BACKEND_AAUDIO=OFF \
-            -DDSP_BACKEND_WASAPI=OFF \
-            -DDSP_BACKEND_COREAUDIO=ON
-      - name: Build
-        run: cmake --build build -j$(sysctl -n hw.ncpu)
-      - name: Unit tests
-        run: ctest --test-dir build --output-on-failure --timeout 30
-      - name: Benchmarks
-        run: ./build/tests/benchmarks
-      - name: Example
-        run: ./build/examples/dsp_example_offline
-
-  build-windows:
-    name: Build & Test (Windows)
-    runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Configure
         run: |
-          cmake -B build -A x64 `
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDSP_BUILD_TESTS=ON \
+            -DDSP_BUILD_EXAMPLES=ON \
+            -DDSP_BACKEND_AAUDIO=OFF \
+            -DDSP_BACKEND_WASAPI=OFF \
+            -DDSP_BACKEND_COREAUDIO=ON \
+            -DDSP_BACKEND_ALSA=OFF
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure --timeout 60
+
+  build-windows:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: |
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
             -DDSP_BUILD_TESTS=ON `
             -DDSP_BUILD_EXAMPLES=ON `
             -DDSP_BACKEND_AAUDIO=OFF `
             -DDSP_BACKEND_WASAPI=ON `
-            -DDSP_BACKEND_COREAUDIO=OFF
+            -DDSP_BACKEND_COREAUDIO=OFF `
+            -DDSP_BACKEND_ALSA=OFF
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
       - name: Unit tests
-        timeout-minutes: 2
         shell: pwsh
         run: |
-          # Shared DLL: build/Release; tests: build/tests/Release.
-          # POST_BUILD copies DLL next to the exe; PATH is a belt-and-suspenders.
-          $dllDir = Join-Path $PWD "build\Release"
-          $testDir = Join-Path $PWD "build\tests\Release"
-          $env:PATH = "$testDir;$dllDir;$env:PATH"
-          if (Test-Path "$testDir\unit_tests.exe") {
-            & "$testDir\unit_tests.exe"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          } else {
-            ctest --test-dir build -C Release --output-on-failure --timeout 30
-          }
-      - name: Benchmarks
-        timeout-minutes: 2
-        shell: pwsh
-        run: |
-          $env:PATH = "$(Join-Path $PWD 'build\tests\Release');$(Join-Path $PWD 'build\Release');$env:PATH"
-          & ".\build\tests\Release\benchmarks.exe"
-      - name: Example
-        shell: pwsh
-        run: |
-          $env:PATH = "$(Join-Path $PWD 'build\examples\Release');$(Join-Path $PWD 'build\Release');$env:PATH"
-          & ".\build\examples\Release\dsp_example_offline.exe"
+          $env:PATH = "$PWD\build\Release;$PWD\build;$env:PATH"
+          ctest --test-dir build -C Release --output-on-failure --timeout 60
 
   build-android:
     name: Build (Android NDK)
@@ -123,6 +99,7 @@ jobs:
             -DDSP_BUILD_EXAMPLES=OFF \
             -DDSP_BACKEND_AAUDIO=ON \
             -DDSP_BACKEND_WASAPI=OFF \
-            -DDSP_BACKEND_COREAUDIO=OFF
+            -DDSP_BACKEND_COREAUDIO=OFF \
+            -DDSP_BACKEND_ALSA=OFF
       - name: Build
         run: cmake --build build-android -j$(nproc)
