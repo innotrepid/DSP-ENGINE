@@ -2,7 +2,7 @@
  * DSP ENGINE — Core processor
  *
  * Pipeline: EQ (MultiBandEq, typed RBJ) → DVC → true-peak limiter → dither
- * Optional SRC via dsp_process_src (linear / cubic / windowed-sinc HQ).
+ * Optional SRC via dsp_process_src (linear / cubic / windowed-sinc HQ) then full pipeline.
  * Real-time safe after construction (no allocations on the process path).
  */
 
@@ -366,6 +366,20 @@ DspError dsp_process_src(DspEngine* eng,
         eng->src_phase = 0.f;
     else
         eng->src_phase = phase - static_cast<float>(static_cast<int>(phase));
+
+    /* Full DSP pipeline on resampled output (chunked to max_block). */
+    int done = 0;
+    while (done < written) {
+        int n = written - done;
+        if (n > eng->max_block) n = eng->max_block;
+        const int samples = n * ch;
+        for (int i = 0; i < samples; ++i)
+            eng->work[i] = static_cast<sample_t>(out[done * ch + i]);
+        process_block(eng, eng->work, n);
+        for (int i = 0; i < samples; ++i)
+            out[done * ch + i] = static_cast<float>(eng->work[i]);
+        done += n;
+    }
 
     *out_frames = written;
     return DSP_OK;
