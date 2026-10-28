@@ -26,7 +26,7 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure --timeout 60
+        run: ctest --test-dir build --output-on-failure --timeout 30
       - name: Benchmarks
         run: ./build/tests/benchmarks
       - name: Example
@@ -50,7 +50,7 @@ jobs:
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure --timeout 60
+        run: ctest --test-dir build --output-on-failure --timeout 30
       - name: Benchmarks
         run: ./build/tests/benchmarks
       - name: Example
@@ -74,12 +74,30 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Unit tests
         timeout-minutes: 2
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 60
+        shell: pwsh
+        run: |
+          # Shared DLL: build/Release; tests: build/tests/Release.
+          # POST_BUILD copies DLL next to the exe; PATH is a belt-and-suspenders.
+          $dllDir = Join-Path $PWD "build\Release"
+          $testDir = Join-Path $PWD "build\tests\Release"
+          $env:PATH = "$testDir;$dllDir;$env:PATH"
+          if (Test-Path "$testDir\unit_tests.exe") {
+            & "$testDir\unit_tests.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            ctest --test-dir build -C Release --output-on-failure --timeout 30
+          }
       - name: Benchmarks
         timeout-minutes: 2
-        run: .\build\tests\Release\benchmarks.exe
+        shell: pwsh
+        run: |
+          $env:PATH = "$(Join-Path $PWD 'build\tests\Release');$(Join-Path $PWD 'build\Release');$env:PATH"
+          & ".\build\tests\Release\benchmarks.exe"
       - name: Example
-        run: .\build\examples\Release\dsp_example_offline.exe
+        shell: pwsh
+        run: |
+          $env:PATH = "$(Join-Path $PWD 'build\examples\Release');$(Join-Path $PWD 'build\Release');$env:PATH"
+          & ".\build\examples\Release\dsp_example_offline.exe"
 
   build-android:
     name: Build (Android NDK)

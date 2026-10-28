@@ -10,9 +10,19 @@ target_include_directories(unit_tests PRIVATE
 )
 target_link_libraries(unit_tests PRIVATE dsp_engine)
 
-# Cap wall time so a hang fails the job instead of blocking runners.
+# On Windows the shared DLL must sit next to the exe or PATH must include it.
+# Copying avoids a silent "DLL not found" hang/dialog under ctest on CI.
+if(WIN32 AND TARGET dsp_engine)
+    add_custom_command(TARGET unit_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:dsp_engine>
+            $<TARGET_FILE_DIR:unit_tests>
+        COMMENT "Copy dsp_engine.dll next to unit_tests"
+    )
+endif()
+
 add_test(NAME unit_tests COMMAND unit_tests)
-set_tests_properties(unit_tests PROPERTIES TIMEOUT 60)
+set_tests_properties(unit_tests PROPERTIES TIMEOUT 30)
 
 add_executable(benchmarks
     benchmarks.cpp
@@ -23,4 +33,11 @@ target_include_directories(benchmarks PRIVATE
 )
 target_link_libraries(benchmarks PRIVATE dsp_engine)
 
-# Benchmarks are a separate CI step — do not register with ctest.
+if(WIN32 AND TARGET dsp_engine)
+    add_custom_command(TARGET benchmarks POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:dsp_engine>
+            $<TARGET_FILE_DIR:benchmarks>
+        COMMENT "Copy dsp_engine.dll next to benchmarks"
+    )
+endif()
